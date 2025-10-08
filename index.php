@@ -279,6 +279,51 @@ function cleanupOldTempFiles($dir, $maxAge = 86400) {
     }
 }
 
+/**
+ * Ensure required directories exist and are writable
+ */
+function ensureUploadDirectories() {
+    global $uploadDir, $outputDir;
+    
+    // Define required directories
+    $directories = [
+        rtrim($uploadDir, '/') . '/',
+        rtrim($uploadDir, '/') . '/temp/',
+        rtrim($outputDir, '/') . '/'
+    ];
+    
+    // Create directories if they don't exist
+    foreach ($directories as $dir) {
+        try {
+            if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
+                throw new RuntimeException(sprintf('Directory "%s" could not be created', $dir));
+            }
+            
+            // Ensure directory is writable
+            if (!is_writable($dir) && !chmod($dir, 0777)) {
+                throw new RuntimeException(sprintf('Directory "%s" is not writable', $dir));
+            }
+            
+            // Create .htaccess for security
+            $htaccess = $dir . '.htaccess';
+            if (!file_exists($htaccess)) {
+                file_put_contents($htaccess, "Order deny,allow\nDeny from all");
+            }
+        } catch (Exception $e) {
+            error_log('Directory setup error: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+}
+
+// Ensure directories exist and have correct permissions
+try {
+    ensureUploadDirectories();
+} catch (Exception $e) {
+    error_log('Directory setup error: ' . $e->getMessage());
+    die('Failed to setup required directories. Please check server logs for details.');
+}
+
 // Run cleanup on the temp directory
 cleanupOldTempFiles($uploadDir . 'temp/');
 
@@ -316,13 +361,31 @@ function processUploadedFile(array $file, string $uploadDir) {
     $filename = uniqid('img_', true) . '.' . $extension;
     $destination = rtrim($uploadDir, '/') . '/' . $filename;
     
-    // Move the uploaded file
-    if (!move_uploaded_file($file['tmp_name'], $destination)) {
-        throw new Exception('Failed to move uploaded file');
+    // Normalize and validate paths
+    $uploadDir = rtrim($uploadDir, '/') . '/';
+    $destination = $uploadDir . $filename;
+    
+    // Double-check directory exists and is writable
+    if (!is_dir($uploadDir)) {
+        throw new Exception(sprintf('Upload directory does not exist: %s', $uploadDir));
     }
     
-    // Set proper permissions
-    chmod($destination, 0644);
+    if (!is_writable($uploadDir)) {
+        throw new Exception(sprintf('Upload directory is not writable: %s', $uploadDir));
+    }
+    
+    // Verify source file
+    if (!is_uploaded_file($file['tmp_name'])) {
+        throw new Exception('Invalid file upload detected');
+    }
+    
+    // Move the file with proper error handling
+    if (!move_uploaded_file($file['tmp_name'], $destination)) {
+        throw new Exception(sprintf('Failed to move uploaded file to %s', $destination));
+    }
+    
+    // Set permissions (non-critical operation)
+    @chmod($destination, 0644);
     
     return [
         'original_name' => $file['name'],
@@ -451,9 +514,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
 
 // Process an uploaded image with face detection and cropping
 function processImage($file, $uploadDir, $outputDir) {
-    // This is a placeholder for the actual image processing logic
-    // You would typically use a library like OpenCV or a service for face detection
-    
     $result = [
         'success' => false,
         'message' => '',
@@ -462,21 +522,43 @@ function processImage($file, $uploadDir, $outputDir) {
     ];
     
     try {
-        // Generate output filename
-        $filename = uniqid('processed_', true) . '.jpg';
+        // Ensure output directory exists and is writable
+        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true) && !is_dir($outputDir)) {
+            throw new RuntimeException(sprintf('Output directory "%s" was not created', $outputDir));
+        }
+        
+        if (!is_writable($outputDir)) {
+            throw new RuntimeException(sprintf('Output directory "%s" is not writable', $outputDir));
+        }
+        
+        // Generate output filename with original extension
+        $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $filename = uniqid('processed_', true) . '.' . $ext;
         $outputPath = rtrim($outputDir, '/') . '/' . $filename;
         
-        // For now, just copy the file as a placeholder
-        if (copy($file['tmp_name'], $outputPath)) {
-            $result['success'] = true;
-            $result['message'] = 'Image processed successfully';
-            $result['output_path'] = $outputPath;
-        } else {
-            throw new Exception('Failed to save processed image');
+        // Check if the uploaded file exists
+        if (!file_exists($file['tmp_name'])) {
+            throw new Exception('Temporary file not found');
         }
+        
+        // Copy the file to the output directory
+        if (!copy($file['tmp_name'], $outputPath)) {
+            $error = error_get_last();
+            throw new Exception('Failed to copy file: ' . ($error['message'] ?? 'Unknown error'));
+        }
+        
+        // Set proper permissions
+        if (!chmod($outputPath, 0664)) {
+            logMessage('Warning: Failed to set permissions for ' . $outputPath, 'WARNING');
+        }
+        
+        $result['success'] = true;
+        $result['message'] = 'Image processed successfully';
+        $result['output_path'] = $outputPath;
+        
     } catch (Exception $e) {
         $result['message'] = $e->getMessage();
-        logMessage('Image processing error: ' . $e->getMessage(), 'ERROR');
+        logMessage('Image processing error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine(), 'ERROR');
     }
     
     return $result;
@@ -488,24 +570,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     
     $response = [
         'success' => false,
-        'message' => '',
+        'message' => 'Processing started',
         'download_url' => '',
         'errors' => []
     ];
     
+    // Initialize temp directory variable for cleanup in finally block
+    $tempDir = null;
+    
     try {
+        // Verify session and uploaded files
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        
         if (empty($_SESSION['uploaded_files'])) {
-            throw new Exception('No files available for processing');
+            throw new Exception('No files available for processing. Please upload files first.');
         }
         
         $uploadedFiles = $_SESSION['uploaded_files'];
-        $zip = new ZipArchive();
         $zipName = 'processed_' . time() . '.zip';
-        $zipPath = $outputDir . $zipName;
+        $zipPath = rtrim($outputDir, '/') . '/' . $zipName;
         
-        logMessage("Starting processing of " . count($uploadedFiles) . " files");
+        logMessage("Starting processing of " . count($uploadedFiles) . " files to $zipPath");
         
-        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== TRUE) {
+        // Ensure the output directory exists and is writable
+        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true) && !is_dir($outputDir)) {
+            throw new RuntimeException(sprintf('Output directory "%s" was not created', $outputDir));
+        }
+        
+        if (!is_writable($outputDir)) {
+            throw new RuntimeException(sprintf('Output directory "%s" is not writable', $outputDir));
+        }
+        
+        // Create a temporary directory for processing
+        $tempDir = rtrim($outputDir, '/') . '/temp_' . uniqid();
+        if (!mkdir($tempDir, 0777, true)) {
+            throw new RuntimeException('Failed to create temporary directory for processing');
+        }
+        
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
             throw new Exception('Failed to create ZIP file');
         }
         
@@ -513,58 +618,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $totalFiles = count($uploadedFiles);
         $errors = [];
         
-        foreach ($uploadedFiles as $file) {
+        // Process each uploaded file
+        foreach ($uploadedFiles as $index => $file) {
             try {
+                if (!isset($file['path']) || !file_exists($file['path'])) {
+                    throw new Exception('File not found');
+                }
+                
+                logMessage("Processing file {$file['original_name']} (" . ($index + 1) . "/$totalFiles)");
+                
+                // Process the file
                 $result = processImage([
                     'name' => $file['original_name'],
-                    'type' => $file['type'],
+                    'type' => $file['type'] ?? mime_content_type($file['path']),
                     'tmp_name' => $file['path'],
                     'error' => 0,
-                    'size' => $file['size']
-                ], $uploadDir, $outputDir);
+                    'size' => $file['size'] ?? filesize($file['path'])
+                ], $uploadDir, $tempDir);
                 
-                if ($result['success']) {
-                    if ($zip->addFile($result['output_path'], basename($result['output_path']))) {
-                        $processedCount++;
-                        logMessage("Added to ZIP: " . $file['original_name']);
-                    } else {
-                        $errors[] = 'Failed to add ' . $file['original_name'] . ' to ZIP';
-                        logMessage("Failed to add to ZIP: " . $file['original_name'], 'ERROR');
+                if ($result['success'] && file_exists($result['output_path'])) {
+                    $addName = basename($file['original_name']);
+                    if (!$zip->addFile($result['output_path'], $addName)) {
+                        throw new Exception('Failed to add file to ZIP');
                     }
+                    $processedCount++;
+                    logMessage("Successfully processed: " . $file['original_name']);
                 } else {
-                    $errors[] = 'Failed to process ' . $file['original_name'] . ': ' . ($result['message'] ?? 'Unknown error');
-                    logMessage("Processing failed: " . $file['original_name'] . ": " . ($result['message'] ?? 'Unknown error'), 'ERROR');
+                    throw new Exception($result['message'] ?? 'Unknown processing error');
                 }
             } catch (Exception $e) {
-                $errors[] = 'Error processing ' . $file['original_name'] . ': ' . $e->getMessage();
-                logMessage("Exception processing " . $file['original_name'] . ": " . $e->getMessage(), 'ERROR');
+                $errorMsg = 'Failed to process ' . ($file['original_name'] ?? 'unknown file') . ': ' . $e->getMessage();
+                $errors[] = $errorMsg;
+                logMessage($errorMsg, 'ERROR');
             }
         }
         
         // Close the ZIP file
-        $zip->close();
+        if ($zip->close() === false) {
+            throw new Exception('Failed to finalize ZIP file');
+        }
+        
+        // Verify the ZIP file was created
+        if (!file_exists($zipPath)) {
+            throw new Exception('Failed to create the final ZIP file');
+        }
         
         // Set appropriate permissions
-        chmod($zipPath, 0644);
+        if (!chmod($zipPath, 0664)) {
+            logMessage('Warning: Failed to set permissions for ' . $zipPath, 'WARNING');
+        }
         
-        if ($processedCount > 0) {
-            $response['success'] = true;
-            $response['message'] = "Successfully processed $processedCount of $totalFiles files";
-            $response['download_url'] = '/output/' . $zipName;
-            
-            if (!empty($errors)) {
-                $response['message'] .= ' (' . count($errors) . ' errors)';
-                $response['errors'] = $errors;
-            }
-        } else {
-            throw new Exception('No files were successfully processed');
+        // Prepare response
+        $response['success'] = $processedCount > 0;
+        $response['message'] = $processedCount > 0 
+            ? "Successfully processed $processedCount of $totalFiles files"
+            : 'No files were processed successfully';
+        $response['download_url'] = 'download.php?file=' . urlencode(basename($zipPath));
+        $response['errors'] = $errors;
+        
+        if ($processedCount === 0 && !empty($errors)) {
+            $response['message'] = 'Failed to process any files: ' . implode('; ', $errors);
         }
         
     } catch (Exception $e) {
-        $response['message'] = $e->getMessage();
-        logMessage('Processing error: ' . $e->getMessage(), 'ERROR');
+        $response['success'] = false;
+        $response['message'] = 'Processing error: ' . $e->getMessage();
+        logMessage('Processing error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine(), 'ERROR');
+    } finally {
+        // Clean up temporary files in case of success or failure
+        if (isset($tempDir) && is_dir($tempDir)) {
+            try {
+                $files = glob($tempDir . '/*');
+                foreach ($files as $file) {
+                    if (is_file($file)) {
+                        @unlink($file);
+                    }
+                }
+                @rmdir($tempDir);
+            } catch (Exception $e) {
+                logMessage('Error cleaning up temporary directory: ' . $e->getMessage(), 'WARNING');
+            }
+        }
     }
     
+    // Output the final response
     echo json_encode($response);
     exit;
 }
@@ -576,7 +713,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
         'message' => 'Please use the file upload form',
         'errors' => []
     ];
-    
     header('Content-Type: application/json');
     echo json_encode($response);
     exit;
@@ -670,9 +806,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
         }
         /* Preview Container Styles */
         #previewContainer {
-            display: block !important;
-            visibility: visible !important;
-            opacity: 1 !important;
+            display: none;
             margin: 20px 0;
             border: 1px solid #dee2e6;
             border-radius: 8px;
@@ -681,7 +815,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
             box-shadow: 0 2px 15px rgba(0, 0, 0, 0.1);
             animation: fadeIn 0.3s ease-out;
             position: relative;
-            z-index: 1000;
         }
         
         #previewImages {
@@ -921,7 +1054,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
                 }, 300);
             }
             
-            // Initialize app after a small delay to ensure all resources are loaded
+            // Initialize the app
+            function initializeApp() {
+                if (!window.IDPhotoCropper) {
+                    console.error('IDPhotoCropper not found');
+                    return;
+                }
+                
+                // Check if already initialized
+                const state = window.IDPhotoCropper.getState ? window.IDPhotoCropper.getState() : null;
+                if (state && state.isInitialized) {
+                    console.warn('App already initialized');
+                    return;
+                }
+                
+                // Initialize the app
+                try {
+                    if (typeof window.IDPhotoCropper.init === 'function') {
+                        window.IDPhotoCropper.init();
+                        console.log('App initialized successfully');
+                    } else {
+                        console.error('IDPhotoCropper.init is not a function');
+                    }
+                } catch (error) {
+                    console.error('Error initializing app:', error);
+                }
+            }
+            
+            // Initialize after a small delay to ensure all resources are loaded
             setTimeout(initializeApp, 100);
         });
         
