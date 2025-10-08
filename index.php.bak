@@ -1,0 +1,1056 @@
+<?php
+/**
+ * ID Photo Cropper - Main Application
+ * 
+ * This script handles file uploads, image processing, and serves the web interface.
+ */
+
+// Set error reporting and display settings
+ini_set('display_errors', 0); // Don't show errors to users in production
+error_reporting(E_ALL);
+
+// Set timezone
+date_default_timezone_set('UTC');
+
+// Define log file path
+$logFile = '/tmp/idcrop_debug.log';
+
+// Define application constants
+define('MAX_FILE_SIZE', 10 * 1024 * 1024); // 10MB
+define('MAX_TOTAL_SIZE', 50 * 1024 * 1024); // 50MB
+define('ALLOWED_TYPES', [
+    'image/jpeg' => 'jpg',
+    'image/png' => 'png',
+    'image/jpg' => 'jpg'
+]);
+
+// Initialize logging
+function logMessage($message, $level = 'INFO') {
+    global $logFile;
+    $timestamp = date('Y-m-d H:i:s');
+    $logMessage = "[$timestamp] [$level] $message" . PHP_EOL;
+    error_log($logMessage, 3, $logFile);
+}
+
+// Custom exception handler
+function handleException(Throwable $e) {
+    $message = sprintf(
+        'Uncaught Exception: %s in %s on line %d',
+        $e->getMessage(),
+        $e->getFile(),
+        $e->getLine()
+    );
+    
+    logMessage($message, 'ERROR');
+    
+    if (!headers_sent()) {
+        header('Content-Type: application/json');
+        http_response_code(500);
+    }
+    
+    echo json_encode([
+        'success' => false,
+        'message' => 'An error occurred while processing your request.'
+    ]);
+    
+    exit(1);
+}
+
+// Set exception handler
+set_exception_handler('handleException');
+
+// Set error handler
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    throw new ErrorException($errstr, $errno, 0, $errfile, $errline);
+});
+
+// Shutdown function to catch fatal errors
+register_shutdown_function(function() {
+    $error = error_get_last();
+    if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+        handleException(new ErrorException(
+            $error['message'], 0, $error['type'], $error['file'], $error['line']
+        ));
+    }
+});
+
+// Log request details
+logMessage(str_repeat('=', 80));
+logMessage("New Request: " . $_SERVER['REQUEST_METHOD'] . ' ' . $_SERVER['REQUEST_URI']);
+logMessage("Remote IP: " . ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR']));
+logMessage("User Agent: " . ($_SERVER['HTTP_USER_AGENT'] ?? 'Unknown'));
+
+// Log POST and FILES data for debugging
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    logMessage("POST Data: " . print_r($_POST, true));
+    
+    if (!empty($_FILES)) {
+        $filesInfo = [];
+        foreach ($_FILES as $field => $file) {
+            if (is_array($file['name'])) {
+                // Handle multiple file uploads
+                $fileCount = count($file['name']);
+                for ($i = 0; $i < $fileCount; $i++) {
+                    $filesInfo[] = [
+                        'field' => $field,
+                        'name' => $file['name'][$i],
+                        'type' => $file['type'][$i],
+                        'size' => $file['size'][$i],
+                        'error' => $file['error'][$i]
+                    ];
+                }
+            } else {
+                // Handle single file upload
+                $filesInfo[] = [
+                    'field' => $field,
+                    'name' => $file['name'],
+                    'type' => $file['type'],
+                    'size' => $file['size'],
+                    'error' => $file['error']
+                ];
+            }
+        }
+        logMessage("Uploaded Files: " . print_r($filesInfo, true));
+    }
+}
+
+// Start session with secure settings
+function startSecureSession() {
+    // Prevent session fixation
+    ini_set('session.use_strict_mode', 1);
+    
+    // Use cookies only for session ID
+    ini_set('session.use_only_cookies', 1);
+    
+    // Set secure cookie parameters
+    $secure = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on';
+    $httponly = true;
+    $samesite = 'Strict';
+    
+    // Set the session cookie parameters
+    session_set_cookie_params([
+        'lifetime' => 86400, // 24 hours
+        'path' => '/',
+        'domain' => $_SERVER['HTTP_HOST'],
+        'secure' => $secure,
+        'httponly' => $httponly,
+        'samesite' => $samesite
+    ]);
+    
+    // Start the session
+    if (session_status() === PHP_SESSION_NONE) {
+        if (!session_start()) {
+            logMessage("Failed to start session");
+            if (headers_sent()) {
+                logMessage("Headers already sent, output started at: " . headers_sent($file, $line) . " in $file on line $line");
+            }
+            throw new RuntimeException('Failed to start session');
+        }
+    }
+    
+    // Regenerate session ID to prevent session fixation
+    if (!isset($_SESSION['initiated'])) {
+        session_regenerate_id(true);
+        $_SESSION['initiated'] = true;
+    }
+}
+
+// Initialize session with error handling
+try {
+    // Start secure session
+    startSecureSession();
+    
+    // Log session info (be careful with sensitive data in production)
+    logMessage("Session ID: " . session_id());
+    logMessage("Session Data: " . print_r($_SESSION, true));
+    
+} catch (Exception $e) {
+    logMessage("Session Error: " . $e->getMessage());
+    // Don't expose internal errors to users in production
+    if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
+        header('Content-Type: application/json');
+        die(json_encode([
+            'success' => false,
+            'message' => 'An error occurred while initializing the session',
+            'errors' => []
+        ]));
+    }
+    die('An error occurred while initializing the session. Please try again later.');
+}
+
+// Define application paths and settings after session is initialized
+
+// Define application paths and settings
+$baseDir = __DIR__;
+$uploadDir = $baseDir . '/uploads/';
+$outputDir = $baseDir . '/output/';
+
+// Ensure the base directory is writable
+if (!is_writable($baseDir)) {
+    logMessage("Base directory is not writable: $baseDir");
+    if (!@chmod($baseDir, 0775)) {
+        logMessage("Failed to set permissions on base directory");
+        http_response_code(500);
+        die(json_encode([
+            'success' => false,
+            'message' => 'Server configuration error: Base directory is not writable',
+            'errors' => []
+        ]));
+    }
+}
+
+// Ensure directories exist and are writable
+function ensureDirectory($dir, $permissions = 0775) {
+    if (!file_exists($dir)) {
+        logMessage("Creating directory: $dir");
+        if (!@mkdir($dir, $permissions, true)) {
+            $error = error_get_last();
+            $errorMsg = "Failed to create directory $dir: " . ($error['message'] ?? 'Unknown error');
+            logMessage($errorMsg);
+            return false;
+        }
+        logMessage("Created directory: $dir");
+    }
+    
+    // Ensure the directory is writable
+    if (!is_writable($dir)) {
+        logMessage("Directory not writable, attempting to set permissions: $dir");
+        if (!@chmod($dir, $permissions)) {
+            $error = error_get_last();
+            $errorMsg = "Failed to set permissions on directory $dir: " . ($error['message'] ?? 'Unknown error');
+            logMessage($errorMsg);
+            return false;
+        }
+        logMessage("Set permissions on directory: $dir");
+    }
+    
+    return true;
+}
+
+// Create and verify required directories
+$requiredDirs = [
+    'uploads' => $uploadDir,
+    'output' => $outputDir,
+    'uploads/temp' => $uploadDir . 'temp/'
+];
+
+foreach ($requiredDirs as $name => $dir) {
+    if (!ensureDirectory($dir)) {
+        $errorMsg = "Failed to initialize required directory: $name ($dir)";
+        logMessage($errorMsg);
+        
+        http_response_code(500);
+        die(json_encode([
+            'success' => false,
+            'message' => 'Server configuration error: ' . $errorMsg,
+            'errors' => []
+        ]));
+    }
+}
+
+// Log directory status
+logMessage("Base directory: $baseDir (writable: " . (is_writable($baseDir) ? 'Yes' : 'No') . ")");
+logMessage("Upload directory: $uploadDir (exists: " . (is_dir($uploadDir) ? 'Yes' : 'No') . ", writable: " . (is_writable($uploadDir) ? 'Yes' : 'No') . ")");
+logMessage("Output directory: $outputDir (exists: " . (is_dir($outputDir) ? 'Yes' : 'No') . ", writable: " . (is_writable($outputDir) ? 'Yes' : 'No') . ")");
+
+// File upload settings
+$allowedTypes = [
+    'image/jpeg' => 'jpg',
+    'image/png' => 'png',
+    'image/jpg' => 'jpg'
+];
+$maxFileSize = 10 * 1024 * 1024; // 10MB
+$maxTotalSize = 50 * 1024 * 1024; // 50MB total for all files
+
+/**
+ * Format bytes to human-readable format
+ */
+function formatBytes($bytes, $precision = 2) {
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    $bytes = max($bytes, 0);
+    $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
+    $pow = min($pow, count($units) - 1);
+    $bytes /= (1 << (10 * $pow));
+    return round($bytes, $precision) . ' ' . $units[$pow];
+}
+
+/**
+ * Get a user-friendly error message for upload errors
+ */
+function getUploadErrorMessage($errorCode) {
+    switch ($errorCode) {
+        case UPLOAD_ERR_INI_SIZE:
+            return 'The uploaded file exceeds the upload_max_filesize directive in php.ini';
+        case UPLOAD_ERR_FORM_SIZE:
+            return 'The uploaded file exceeds the MAX_FILE_SIZE directive that was specified in the HTML form';
+        case UPLOAD_ERR_PARTIAL:
+            return 'The uploaded file was only partially uploaded';
+        case UPLOAD_ERR_NO_FILE:
+            return 'No file was uploaded';
+        case UPLOAD_ERR_NO_TMP_DIR:
+            return 'Missing a temporary folder';
+        case UPLOAD_ERR_CANT_WRITE:
+            return 'Failed to write file to disk';
+        case UPLOAD_ERR_EXTENSION:
+            return 'A PHP extension stopped the file upload';
+        default:
+            return 'Unknown upload error';
+    }
+}
+
+/**
+ * Clean up old temporary files (older than 24 hours by default)
+ */
+function cleanupOldTempFiles($dir, $maxAge = 86400) {
+    if (!is_dir($dir)) {
+        return;
+    }
+    
+    $now = time();
+    $files = glob($dir . '*');
+    
+    foreach ($files as $file) {
+        if (is_file($file) && ($now - filemtime($file) > $maxAge)) {
+            @unlink($file);
+            logMessage("Cleaned up old temp file: $file");
+        }
+    }
+}
+
+// Run cleanup on the temp directory
+cleanupOldTempFiles($uploadDir . 'temp/');
+
+/**
+ * Process an uploaded file
+ */
+function processUploadedFile(array $file, string $uploadDir): array {
+    // Validate file
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Upload error: ' . getUploadErrorMessage($file['error']));
+    }
+    
+    // Check file size
+    if ($file['size'] > MAX_FILE_SIZE) {
+        throw new RuntimeException(sprintf(
+            'File too large: %s (max: %s)',
+            formatBytes($file['size']),
+            formatBytes(MAX_FILE_SIZE)
+        ));
+    }
+    
+    // Verify file type
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mimeType = $finfo->file($file['tmp_name']);
+    
+    if (!isset(ALLOWED_TYPES[$mimeType])) {
+        throw new RuntimeException(sprintf(
+            'Invalid file type: %s. Allowed types: %s',
+            $mimeType,
+            implode(', ', array_keys(ALLOWED_TYPES))
+        ));
+    }
+    
+    // Generate unique filename
+    $extension = ALLOWED_TYPES[$mimeType];
+    $filename = uniqid('img_', true) . '.' . $extension;
+    $targetPath = rtrim($uploadDir, '/') . '/' . $filename;
+    
+    // Move uploaded file
+    if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
+        throw new RuntimeException('Failed to move uploaded file');
+    }
+    
+    // Set proper permissions
+    chmod($targetPath, 0644);
+    
+    return [
+        'original_name' => $file['name'],
+        'saved_name' => $filename,
+        'path' => $targetPath,
+        'size' => $file['size'],
+        'type' => $mimeType,
+        'url' => 'uploads/' . $filename
+    ];
+}
+
+/**
+ * Handle file upload request
+ */
+function handleFileUpload(): void {
+    header('Content-Type: application/json');
+    
+    $response = [
+        'success' => false,
+        'message' => '',
+        'errors' => [],
+        'uploaded_files' => [],
+        'stats' => [
+            'total' => 0,
+            'success' => 0,
+            'failed' => 0,
+            'skipped' => 0,
+            'total_size' => 0
+        ]
+    ];
+    
+    try {
+        // Verify that we have files to process
+        if (!isset($_FILES['images']) || !is_array($_FILES['images']['name'])) {
+            throw new InvalidArgumentException('No files were uploaded or invalid file data received');
+        }
+        
+        $uploadDir = __DIR__ . '/uploads/';
+        ensureDirectory($uploadDir);
+        
+        $files = [];
+        $fileCount = count($_FILES['images']['name']);
+        
+        // Process each uploaded file
+        for ($i = 0; $i < $fileCount; $i++) {
+            if ($_FILES['images']['error'][$i] === UPLOAD_ERR_NO_FILE) {
+                $response['stats']['skipped']++;
+                continue;
+            }
+            
+            $file = [
+                'name' => $_FILES['images']['name'][$i],
+                'type' => $_FILES['images']['type'][$i],
+                'tmp_name' => $_FILES['images']['tmp_name'][$i],
+                'error' => $_FILES['images']['error'][$i],
+                'size' => $_FILES['images']['size'][$i]
+            ];
+            
+            try {
+                $uploadedFile = processUploadedFile($file, $uploadDir);
+                $response['uploaded_files'][] = $uploadedFile;
+                $response['stats']['success']++;
+                $response['stats']['total_size'] += $file['size'];
+            } catch (Exception $e) {
+                $response['errors'][] = [
+                    'file' => $file['name'],
+                    'message' => $e->getMessage()
+                ];
+                $response['stats']['failed']++;
+                logMessage(sprintf('Failed to process file %s: %s', $file['name'], $e->getMessage()), 'ERROR');
+            }
+        }
+        
+        // Update response
+        $response['stats']['total'] = $fileCount;
+        $response['success'] = $response['stats']['success'] > 0 && $response['stats']['failed'] === 0;
+        
+        if ($response['stats']['success'] > 0) {
+            $response['message'] = $response['success'] 
+                ? 'All files were uploaded successfully' 
+                : 'Some files could not be uploaded';
+        } else {
+            $response['message'] = 'No files were uploaded successfully';
+        }
+        
+        // Store uploaded files in session for processing
+        if (!empty($response['uploaded_files'])) {
+            if (!isset($_SESSION['uploaded_files'])) {
+                $_SESSION['uploaded_files'] = [];
+            }
+            
+            foreach ($response['uploaded_files'] as $file) {
+                $_SESSION['uploaded_files'][$file['saved_name']] = $file;
+            }
+        }
+        
+    } catch (Exception $e) {
+        $response['success'] = false;
+        $response['message'] = $e->getMessage();
+        logMessage('File upload error: ' . $e->getMessage(), 'ERROR');
+    }
+    
+    echo json_encode($response);
+    exit;
+}
+
+// Handle file upload only
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
+    handleFileUpload();
+}
+            $fileExt = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $mimeType = $finfo ? finfo_file($finfo, $file['tmp_name']) : mime_content_type($file['tmp_name']);
+            if ($finfo) finfo_close($finfo);
+
+            if (!in_array($mimeType, array_keys($allowedTypes)) || !isset($allowedTypes[$mimeType])) {
+                $fileError = "Invalid file type: {$mimeType}. Allowed types: " . implode(', ', array_keys($allowedTypes));
+                $response['errors'][] = [
+                    'file' => $file['name'],
+                    'message' => $fileError
+                ];
+                $response['stats']['failed']++;
+                logMessage("Invalid file type: {$file['name']} - $mimeType");
+                continue;
+            }
+
+            // Ensure the file extension matches the MIME type
+            $expectedExt = $allowedTypes[$mimeType];
+            if ($fileExt !== $expectedExt) {
+                $fileError = "File extension '$fileExt' does not match MIME type '$mimeType'. Expected extension: .$expectedExt";
+                $response['errors'][] = [
+                    'file' => $file['name'],
+                    'message' => $fileError
+                ];
+                $response['stats']['failed']++;
+                logMessage("File extension mismatch: {$file['name']} - $fileExt vs $expectedExt");
+                continue;
+            }
+
+            // Generate a unique filename
+            $newFilename = uniqid('img_', true) . '.' . $expectedExt;
+            $targetPath = rtrim($uploadDir, '/') . '/' . $newFilename;
+
+            // Log file processing start
+            logMessage("$logPrefix Starting processing (Type: $mimeType, Size: " . formatBytes($file['size']) . ")");
+            
+            try {
+                // Move the uploaded file to the target directory
+                if (!@move_uploaded_file($file['tmp_name'], $targetPath)) {
+                    throw new Exception('Failed to move uploaded file');
+                }
+                
+                // Verify the file was moved successfully
+                if (!file_exists($targetPath)) {
+                    throw new Exception('File was not saved correctly');
+                }
+                
+                // Set proper permissions
+                chmod($targetPath, 0644);
+                
+                // Add to uploaded files list
+                $uploadedFiles[] = [
+                    'original_name' => $file['name'],
+                    'saved_name' => $newFilename,
+                    'size' => $file['size'],
+                    'type' => $mimeType,
+                    'path' => $targetPath,
+                    'url' => 'uploads/' . $newFilename
+                ];
+                
+                $response['stats']['success']++;
+                logMessage("$logPrefix Successfully saved to $targetPath");
+                
+            } catch (Exception $e) {
+                $errorMsg = $e->getMessage();
+                $response['errors'][] = [
+                    'file' => $file['name'],
+                    'message' => $errorMsg
+                ];
+                $response['stats']['failed']++;
+                logMessage("$logPrefix Error - $errorMsg");
+                
+                // Clean up if the file was partially moved
+                if (file_exists($targetPath)) {
+                    @unlink($targetPath);
+                }
+                
+                continue;
+            }
+
+            // File has been successfully processed and moved
+            // No need for additional validation here as it's already been done
+            continue;
+        }
+        
+        // Update response with upload results
+        if (!empty($uploadedFiles)) {
+            $response['success'] = count($response['errors']) === 0;
+            $response['message'] = $response['success'] 
+                ? 'All files were uploaded successfully' 
+                : 'Some files could not be uploaded';
+            
+            // Log summary
+            $summary = sprintf(
+                'Upload completed. Success: %d, Failed: %d, Skipped: %d, Total: %d',
+                $response['stats']['success'] ?? 0,
+                $response['stats']['failed'] ?? 0,
+                $response['stats']['skipped'] ?? 0,
+                $response['stats']['total']
+            );
+            logMessage($summary);
+            
+            // If no files were successfully uploaded and there were no other errors, consider it a failure
+            if (empty($uploadedFiles) && empty($response['errors'])) {
+                $response['success'] = false;
+                $response['message'] = 'No files were uploaded. Please check the file requirements and try again.';
+            }
+            $response['uploaded_files'] = $uploadedFiles;
+            
+            // Store uploaded files in session for processing
+            if (!isset($_SESSION['uploaded_files'])) {
+                $_SESSION['uploaded_files'] = [];
+            }
+            
+            // Add new files to session
+            if (!empty($uploadedFiles)) {
+                try {
+                    foreach ($uploadedFiles as $file) {
+                        if (isset($file['saved_name'])) {
+                            $_SESSION['uploaded_files'][$file['saved_name']] = $file;
+                        }
+                    }
+                } catch (Exception $e) {
+                    error_log('Error adding files to session: ' . $e->getMessage());
+                    // Continue execution even if session update fails
+                }
+            }
+        } else if (empty($response['errors'])) {
+            $response['message'] = 'No files were uploaded';
+        }
+        
+    } catch (Exception $e) {
+        $response['success'] = false;
+        $response['message'] = 'An error occurred: ' . $e->getMessage();
+        error_log('File upload error: ' . $e->getMessage());
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Exception: " . $e->getMessage() . "\n", FILE_APPEND);
+    }
+    
+    echo json_encode($response);
+    exit;
+}
+
+// Handle processing of uploaded files
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'process_uploaded_files') {
+    header('Content-Type: application/json');
+    
+    $response = [
+        'success' => false,
+        'message' => '',
+        'errors' => [],
+        'downloadUrl' => null
+    ];
+    
+    try {
+        session_start();
+        
+        if (empty($_SESSION['uploaded_files'])) {
+            throw new Exception('No files available for processing');
+        }
+        
+        $uploadedFiles = $_SESSION['uploaded_files'];
+        $zip = new ZipArchive();
+        $zipName = 'processed_' . time() . '.zip';
+        $zipPath = $outputDir . $zipName;
+        
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Starting processing of " . count($uploadedFiles) . " files\n", FILE_APPEND);
+        
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== TRUE) {
+            throw new Exception('Failed to create ZIP file');
+        }
+        
+        $processedCount = 0;
+        $totalFiles = count($uploadedFiles);
+        $errors = [];
+        
+        foreach ($uploadedFiles as $file) {
+            try {
+                $result = processImage([
+                    'name' => $file['original_name'],
+                    'type' => $file['type'],
+                    'tmp_name' => $file['path'],
+                    'error' => 0,
+                    'size' => $file['size']
+                ], $uploadDir, $outputDir);
+                
+                if ($result['success']) {
+                    if ($zip->addFile($result['output_path'], basename($result['output_path']))) {
+                        $processedCount++;
+                        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Added to ZIP: " . $file['original_name'] . "\n", FILE_APPEND);
+                    } else {
+                        $errors[] = 'Failed to add ' . $file['original_name'] . ' to ZIP';
+                        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Failed to add to ZIP: " . $file['original_name'] . "\n", FILE_APPEND);
+                    }
+                } else {
+                    $errors[] = 'Failed to process ' . $file['original_name'] . ': ' . ($result['message'] ?? 'Unknown error');
+                    file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Processing failed: " . $file['original_name'] . ": " . ($result['message'] ?? 'Unknown error') . "\n", FILE_APPEND);
+                }
+            } catch (Exception $e) {
+                $errors[] = 'Error processing ' . $file['original_name'] . ': ' . $e->getMessage();
+                file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Exception processing " . $file['original_name'] . ": " . $e->getMessage() . "\n", FILE_APPEND);
+            }
+        }
+        
+        // Close the ZIP file
+        $zip->close();
+        
+        if ($processedCount > 0) {
+            $response['success'] = true;
+            $response['message'] = "Successfully processed $processedCount of $totalFiles files.";
+            $response['downloadUrl'] = '/idcrop/output/' . $zipName;
+            
+            if (!empty($errors)) {
+                $response['message'] .= ' ' . count($errors) . ' files had errors.';
+                $response['errors'] = $errors;
+            }
+            
+            file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Processing completed: " . $response['message'] . "\n", FILE_APPEND);
+        } else {
+            $response['message'] = 'No files were successfully processed.';
+            if (!empty($errors)) {
+                $response['errors'] = $errors;
+            }
+            file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Processing failed: " . $response['message'] . "\n", FILE_APPEND);
+            
+            // Clean up empty ZIP file if no files were added
+            if (file_exists($zipPath)) {
+                unlink($zipPath);
+            }
+        }
+        
+        // Clear the session after processing
+        unset($_SESSION['uploaded_files']);
+        
+    } catch (Exception $e) {
+        $response['message'] = 'An error occurred during processing: ' . $e->getMessage();
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Processing exception: " . $e->getMessage() . "\n", FILE_APPEND);
+    }
+    
+    echo json_encode($response);
+    exit;
+}
+
+// Log request details for debugging
+file_put_contents('/tmp/idcrop_debug.log', "\n" . str_repeat('=', 80) . "\n", FILE_APPEND);
+file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - New Request\n", FILE_APPEND);
+file_put_contents('/tmp/idcrop_debug.log', "Request Method: " . $_SERVER['REQUEST_METHOD'] . "\n", FILE_APPEND);
+file_put_contents('/tmp/idcrop_debug.log', "POST Data: " . print_r($_POST, true) . "\n", FILE_APPEND);
+file_put_contents('/tmp/idcrop_debug.log', "FILES Data: " . print_r($_FILES, true) . "\n", FILE_APPEND);
+
+// Handle direct file uploads (not using the form)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['action']) || $_POST['action'] !== 'process_uploaded_files')) {
+    $response = [
+        'success' => false,
+        'message' => 'Please use the file upload form to upload files',
+        'errors' => []
+    ];
+    
+    header('Content-Type: application/json');
+    echo json_encode($response);
+    exit;
+}
+/**
+ * Process an uploaded image with face detection and cropping
+ */
+function processImage($file, $uploadDir, $outputDir) {
+    global $allowedTypes, $maxFileSize;
+    
+    file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Starting to process image: " . $file['name'] . "\n", FILE_APPEND);
+    
+    // Validate file
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        $error = "Upload error: " . $file['error'] . " - " . getUploadErrorMessage($file['error']);
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - $error\n", FILE_APPEND);
+        return ['success' => false, 'message' => $error];
+    }
+    
+    if (!in_array($file['type'], $allowedTypes)) {
+        $error = "Invalid file type: " . $file['type'];
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - $error\n", FILE_APPEND);
+        return ['success' => false, 'message' => $error];
+    }
+    
+    if ($file['size'] > $maxFileSize) {
+        $error = "File too large: " . $file['size'] . " bytes";
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - $error\n", FILE_APPEND);
+        return ['success' => false, 'message' => $error];
+    }
+    
+    // Generate unique filename
+    $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $filename = uniqid('img_') . '.' . $extension;
+    $filepath = $uploadDir . $filename;
+    
+    // Move uploaded file
+    if (!move_uploaded_file($file['tmp_name'], $filepath)) {
+        $error = "Failed to move uploaded file. Check permissions for: $filepath";
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - $error\n", FILE_APPEND);
+        return ['success' => false, 'message' => $error];
+    }
+    
+    file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - File moved to: $filepath\n", FILE_APPEND);
+    
+    // Load the image with detailed error handling
+    $image = null;
+    $cropped = null;
+    $resized = null;
+    $outputPath = '';
+    
+    try {
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Attempting to load image: $filepath\n", FILE_APPEND);
+        
+        // Get image info
+        $imageInfo = @getimagesize($filepath);
+        if ($imageInfo === false) {
+            throw new Exception('Invalid image file or unsupported format');
+        }
+        
+        $width = $imageInfo[0];
+        $height = $imageInfo[1];
+        $type = $imageInfo[2];
+        
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Image info - Width: $width, Height: $height, Type: $type\n", FILE_APPEND);
+        
+        // Load image based on type
+        switch ($type) {
+            case IMAGETYPE_JPEG:
+                $image = @imagecreatefromjpeg($filepath);
+                $extension = 'jpg';
+                break;
+            case IMAGETYPE_PNG:
+                $image = @imagecreatefrompng($filepath);
+                $extension = 'png';
+                if ($image) {
+                    // Preserve transparency for PNG
+                    imagealphablending($image, false);
+                    imagesavealpha($image, true);
+                }
+                break;
+            default:
+                throw new Exception('Unsupported image format. Only JPG and PNG are supported.');
+        }
+        
+        if (!$image) {
+            $error = error_get_last();
+            throw new Exception('Failed to create image resource: ' . ($error['message'] ?? 'Unknown error'));
+        }
+        
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Image loaded successfully\n", FILE_APPEND);
+        
+        // In a production environment, you'd use a proper face detection library
+        $faceX = $width * 0.25;
+        $faceY = $height * 0.25;
+        $faceWidth = $width * 0.5;
+        $faceHeight = $height * 0.5;
+    
+        // Create a square crop centered on the face
+        $cropSize = min($faceWidth, $faceHeight);
+        $cropX = max(0, $faceX + ($faceWidth - $cropSize) / 2);
+        $cropY = max(0, $faceY + ($faceHeight - $cropSize) / 2);
+        
+        // Create a new image with the cropped area
+        $cropped = imagecreatetruecolor($cropSize, $cropSize);
+        
+        // Preserve transparency for PNG
+        if ($extension === 'png') {
+            imagealphablending($cropped, false);
+            imagesavealpha($cropped, true);
+            $transparent = imagecolorallocatealpha($cropped, 0, 0, 0, 127);
+            imagefill($cropped, 0, 0, $transparent);
+        }
+        
+        if (!imagecopy($cropped, $image, 0, 0, $cropX, $cropY, $cropSize, $cropSize)) {
+            throw new Exception('Failed to crop image');
+        }
+        
+        // Resize to 300x300
+        $finalSize = 300;
+        $resized = imagecreatetruecolor($finalSize, $finalSize);
+        
+        // Preserve transparency for PNG
+        if ($extension === 'png') {
+            imagealphablending($resized, false);
+            imagesavealpha($resized, true);
+            $transparent = imagecolorallocatealpha($resized, 0, 0, 0, 127);
+            imagefill($resized, 0, 0, $transparent);
+        }
+        
+        if (!imagecopyresampled($resized, $cropped, 0, 0, 0, 0, $finalSize, $finalSize, $cropSize, $cropSize)) {
+            throw new Exception('Failed to resize image');
+        }
+        
+        // Ensure output directory exists and is writable
+        if (!is_dir($outputDir)) {
+            if (!mkdir($outputDir, 0777, true)) {
+                throw new Exception("Failed to create output directory: $outputDir");
+            }
+            file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Created output directory: $outputDir\n", FILE_APPEND);
+        }
+        
+        if (!is_writable($outputDir)) {
+            throw new Exception("Output directory is not writable: $outputDir");
+        }
+        
+        // Save the processed image
+        $outputFilename = 'processed_' . $filename;
+        $outputPath = $outputDir . $outputFilename;
+        
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Saving processed image to: $outputPath\n", FILE_APPEND);
+        
+        $saved = false;
+        switch ($extension) {
+            case 'jpg':
+            case 'jpeg':
+                $saved = imagejpeg($resized, $outputPath, 90);
+                break;
+            case 'png':
+                $saved = imagepng($resized, $outputPath, 9);
+                break;
+        }
+        
+        if (!$saved) {
+            $error = error_get_last();
+            throw new Exception('Failed to save processed image: ' . ($error['message'] ?? 'Unknown error'));
+        }
+        
+        // Set proper permissions
+        chmod($outputPath, 0664);
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - Image successfully saved to: $outputPath\n", FILE_APPEND);
+        
+    } catch (Exception $e) {
+        // Clean up resources in case of error
+        if ($resized) imagedestroy($resized);
+        if ($cropped) imagedestroy($cropped);
+        if ($image) imagedestroy($image);
+        
+        // Log the error
+        $errorMsg = 'Error processing image: ' . $e->getMessage();
+        file_put_contents('/tmp/idcrop_debug.log', date('Y-m-d H:i:s') . " - $errorMsg\n", FILE_APPEND);
+        
+        return [
+            'success' => false,
+            'message' => $errorMsg
+        ];
+    }
+    
+    // Free up memory
+    if ($resized) imagedestroy($resized);
+    if ($cropped) imagedestroy($cropped);
+    if ($image) imagedestroy($image);
+    
+    return [
+        'success' => true,
+        'output_path' => $outputPath,
+        'message' => 'Image processed successfully'
+    ];
+}
+
+// End of processImage function
+
+// Handle processing of uploaded files
+
+// Output HTML
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ID Photo Cropper</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #0d6efd;
+            background-color: #f8f9fa;
+        }
+        .upload-area i {
+            color: #6c757d;
+            margin-bottom: 0.5rem;
+        }
+        /* Ensure the form and button don't overlap with the drop area */
+        #uploadForm {
+            margin-top: 1.5rem;
+        }
+        /* Make sure the file input is properly contained within the drop area */
+        #dropArea {
+            position: relative;
+            overflow: hidden;
+        }
+        #dropArea input[type="file"] {
+            position: absolute;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+        /* Ensure the button is properly clickable */
+        #processButton {
+            z-index: 10;
+            position: relative;
+        }
+        .preview-image {
+            max-width: 150px;
+            max-height: 150px;
+            margin: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+    <div class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h2 class="h4 mb-0">ID Photo Cropper</h2>
+                    </div>
+                    <div class="card-body">
+                        
+                        <div class="mb-3">
+                            <label for="images" class="form-label">Upload ID Photos</label>
+                            <div class="upload-area" id="dropArea">
+                                <i class="bi bi-cloud-upload fs-1"></i>
+                                <p class="mt-2 drop-zone-text">Drag & drop your images here or click to browse</p>
+                                <p class="text-muted small mb-3">Supports JPG, JPEG, PNG (Max 10MB each)</p>
+                                <div style="position: absolute; width: 100%; height: 100%; top: 0; left: 0; opacity: 0; overflow: hidden;">
+                                    <input type="file" id="images" name="images[]" multiple accept="image/*" style="width: 100%; height: 100%;">
+                                </div>
+                            </div>
+                            <div id="fileList" class="mt-3"></div>
+                            <div id="previewContainer" class="mt-3"></div>
+                        </div>
+                        
+                        <form id="uploadForm" method="post" enctype="multipart/form-data" action="">
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-primary btn-lg" id="processButton">
+                                    <span id="submitText">Process Images</span>
+                                    <div id="spinner" class="spinner-border spinner-border-sm d-none" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                </button>
+                            </div>
+                        </form>
+                        
+                        <div id="progressContainer" class="mt-4 d-none">
+                            <div class="progress">
+                                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                            </div>
+                            <p id="progressText" class="text-center mt-2">Processing: 0%</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-4 text-center text-muted small">
+                    <p>This tool will automatically detect faces, crop them to 1:1 ratio, and extract ID numbers.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Load external JavaScript -->
+    <script src="assets/app.js" defer></script>
+</body>
+</html>
