@@ -125,9 +125,15 @@ A PHP web application that automatically detects faces in ID photos, crops them 
 - Uploaded files are stored with random names to prevent directory traversal attacks.
 - Consider implementing rate limiting in production.
 
+## Changelog
+
+### [1.0.1] - 2025-10-08
+- Fixed syntax error in `assets/app.js` where the `handleFileSelect` function wasn't properly closed before the IIFE
+- Added proper error handling for form submission
+
 ## License
 
-This project is open-source and available under the MIT License.
+This project is open source and available under the [MIT License](LICENSE).
 
 ## Contributing
 

@@ -587,9 +587,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>ID Photo Cropper</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    
+    <!-- Preconnect to CDNs for better performance -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    
+    <!-- Bootstrap 5.3.2 CSS with SRI -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" 
+          rel="stylesheet" 
+          integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" 
+          crossorigin="anonymous">
+    
+    <!-- Font Awesome 6.4.2 with SRI -->
+    <link rel="stylesheet" 
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" 
+          integrity="sha512-z3gLpd7yknf1YoNbCzqRKc4qyor8gaKU1qmn+CShxbuBusANI9QpRohGBreCFkKxLhei6S9CQXFEbbKuqLg0DA==" 
+          crossorigin="anonymous" 
+          referrerpolicy="no-referrer" />
+          
+    <!-- Google Fonts for better typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body {
             background-color: #f8f9fa;
@@ -647,6 +668,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
             font-size: 0.8rem;
             color: #6c757d;
         }
+        /* Preview Container Styles */
+        #previewContainer {
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            margin: 20px 0;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            background-color: #fff;
+            box-shadow: 0 2px 15px rgba(0, 0, 0, 0.1);
+            animation: fadeIn 0.3s ease-out;
+            position: relative;
+            z-index: 1000;
+        }
+        
+        #previewImages {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 400px;
+            padding: 10px;
+        }
+        
+        #previewContainer .card {
+            border: none;
+            box-shadow: none;
+            background: transparent;
+            width: 100%;
+        }
+        
+        #previewContainer .card-body {
+            padding: 0;
+        }
+        
+        .preview-container .card-header {
+            background-color: #f8f9fa;
+            border-bottom: 1px solid rgba(0,0,0,.125);
+            font-weight: 600;
+        }
+        
+        .preview-image {
+            max-width: 100%;
+            max-height: 70vh;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            display: block;
+            margin: 0 auto;
+            border: 2px solid #007bff;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 10px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+        
+        .img-preview-container {
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            margin: 1rem 0;
+            padding: 2rem;
+            border: 2px dashed #dee2e6;
+            transition: all 0.3s ease;
+        }
+        
+        .img-preview-container:hover {
+            border-color: #adb5bd;
+            background-color: #f1f3f5;
+        }
+        
         .file-item .file-remove {
             color: #dc3545;
             cursor: pointer;
@@ -656,17 +753,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
             height: 0.5rem;
             margin-top: 0.5rem;
         }
-        .btn-upload {
-            margin-top: 1rem;
+        
+        /* Animation for preview */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
+        
+        /* Preview container styles */
         .preview-container {
-            margin-top: 2rem;
+            display: none;
+            margin: 2rem 0;
+            padding: 15px;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            animation: fadeIn 0.3s ease-out;
         }
-        .preview-title {
-            font-size: 1.2rem;
-            margin-bottom: 1rem;
-            font-weight: 500;
+        
+        #previewContainer.show {
+            display: block !important;
         }
+        
         .preview-image {
             max-width: 100%;
             height: auto;
@@ -674,11 +782,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
             margin-bottom: 1rem;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
+        
+        .btn-upload {
+            margin-top: 1rem;
+        }
+        
+        .preview-title {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            font-weight: 500;
+        }
+        
         .processing-indicator {
             display: none;
             text-align: center;
             margin: 1rem 0;
-        }
         .processing-spinner {
             width: 2rem;
             height: 2rem;
@@ -739,20 +857,93 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
             </div>
             
             <div class="preview-container" id="previewContainer" style="display: none;">
-                <h5 class="preview-title">Preview</h5>
-                <div class="row" id="previewImages">
-                    <!-- Preview images will be added here -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">Preview</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row" id="previewImages">
+                            <!-- Preview images will be added here -->
+                        </div>
+                    </div>
+                    <div class="card-footer text-end">
+                        <a href="#" class="btn btn-primary" id="downloadBtn" style="display: none;">
+                            <i class="fas fa-download me-2"></i>Download All
+                        </a>
+                    </div>
                 </div>
-                <div class="text-center mt-3">
-                    <a href="#" class="btn btn-primary" id="downloadBtn" style="display: none;">
-                        <i class="fas fa-download me-2"></i>Download All
-                    </a>
-                </div>
+            </div>
             </div>
         </div>
     </div>
     
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Bootstrap 5.3.2 JS Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" 
+            integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" 
+            crossorigin="anonymous"></script>
+    
+    <!-- Add a loading state to prevent FOUC (Flash of Unstyled Content) -->
+    <style>
+        /* Hide everything until the page is fully loaded */
+        body:not(.loaded) {
+            opacity: 0;
+            transition: opacity 0.3s ease-in;
+        }
+        /* Show loading indicator */
+        .loading-indicator {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 9999;
+        }
+    </style>
+    
+    <!-- Add loading indicator -->
+    <div class="loading-indicator">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+    
+    <!-- Initialize app after DOM is loaded -->
+    <script>
+        // Mark page as loaded when everything is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add loaded class to body
+            document.body.classList.add('loaded');
+            
+            // Remove loading indicator after a short delay
+            const loadingIndicator = document.querySelector('.loading-indicator');
+            if (loadingIndicator) {
+                setTimeout(() => {
+                    loadingIndicator.style.display = 'none';
+                }, 300);
+            }
+            
+            // Initialize app after a small delay to ensure all resources are loaded
+            setTimeout(initializeApp, 100);
+        });
+        
+        // Global error handler
+        window.addEventListener('error', function(e) {
+            console.error('Global error:', e.error || e.message, e.filename, 'line:', e.lineno);
+            // Show error to user
+            const errorAlert = document.getElementById('errorAlert');
+            const errorMessage = document.getElementById('errorMessage');
+            if (errorAlert && errorMessage) {
+                errorMessage.textContent = 'An error occurred. Please try again.';
+                errorAlert.classList.remove('d-none');
+            }
+            // Hide loading indicator if still visible
+            const loadingIndicator = document.querySelector('.loading-indicator');
+            if (loadingIndicator) {
+                loadingIndicator.style.display = 'none';
+            }
+        });
+    </script>
+    
+    <!-- Load custom JS -->
     <script src="assets/app.js" defer></script>
 </body>
 </html>

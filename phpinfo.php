@@ -1,2 +1,1 @@
-<?php
-phpinfo(INFO_VARIABLES | INFO_ENVIRONMENT);
+<?php phpinfo(); ?>

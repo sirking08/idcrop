@@ -15,28 +15,117 @@
     let fileReaders = []; // Track FileReader instances for cleanup
 
     // DOM Elements
-    const dropArea = document.getElementById('dropZone');
-    const fileInput = document.getElementById('fileInput');
-    const fileList = document.getElementById('fileList');
-    const processBtn = document.getElementById('processBtn');
-    const processingIndicator = document.getElementById('processingIndicator');
-    const infoAlert = document.getElementById('infoAlert');
-    const infoMessage = document.getElementById('infoMessage');
-    const errorAlert = document.getElementById('errorAlert');
-    const errorMessage = document.getElementById('errorMessage');
-    const previewContainer = document.getElementById('previewContainer');
-    const previewImages = document.getElementById('previewImages');
-    const downloadBtn = document.getElementById('downloadBtn');
+    const elements = {
+        // File upload elements (required)
+        dropArea: document.getElementById('dropZone'),
+        fileInput: document.getElementById('fileInput'),
+        fileList: document.getElementById('fileList'),
+        processBtn: document.getElementById('processBtn'),
+        processingIndicator: document.getElementById('processingIndicator'),
+        
+        // UI feedback elements (required)
+        infoAlert: document.getElementById('infoAlert'),
+        infoMessage: document.getElementById('infoMessage'),
+        errorAlert: document.getElementById('errorAlert'),
+        errorMessage: document.getElementById('errorMessage'),
+        previewContainer: document.getElementById('previewContainer'),
+        previewImages: document.getElementById('previewImages'),
+        downloadBtn: document.getElementById('downloadBtn'),
+        
+        // Progress elements (optional)
+        progressBar: document.querySelector('.progress-bar'),
+        progressText: document.querySelector('.progress-text'),
+        progressContainer: document.querySelector('.progress-container'),
+        
+        // Form elements (optional)
+        submitBtn: document.querySelector('button[type="submit"]'),
+        submitText: document.querySelector('.submit-text'),
+        spinner: document.querySelector('.spinner-border')
+    };
+    
+    // Create fallback elements for optional components
+    if (!elements.progressContainer) {
+        const progressDiv = document.createElement('div');
+        progressDiv.className = 'progress-container mt-3';
+        progressDiv.style.display = 'none';
+        progressDiv.innerHTML = `
+            <div class="progress">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+            </div>
+            <div class="progress-text text-center mt-2 small text-muted">0%</div>
+        `;
+        document.querySelector('.upload-container').appendChild(progressDiv);
+        
+        elements.progressContainer = progressDiv;
+        elements.progressBar = progressDiv.querySelector('.progress-bar');
+        elements.progressText = progressDiv.querySelector('.progress-text');
+    }
+    
+    // Create a fallback spinner if not present
+    if (!elements.spinner && elements.submitBtn) {
+        const spinner = document.createElement('span');
+        spinner.className = 'spinner-border spinner-border-sm d-none';
+        spinner.setAttribute('role', 'status');
+        spinner.setAttribute('aria-hidden', 'true');
+        elements.submitBtn.prepend(' ');
+        elements.submitBtn.prepend(spinner);
+        elements.spinner = spinner;
+    }
+    
+    // Destructure for easier access
+    const {
+        dropArea, fileInput, fileList, processBtn, processingIndicator,
+        infoAlert, infoMessage, errorAlert, errorMessage, previewContainer,
+        previewImages, downloadBtn, progressBar, progressText, progressContainer,
+        submitBtn, submitText, spinner
+    } = elements;
     
     // Initialize the application
     function init() {
         console.log('=== IDCrop App Initialized ===');
-        if (dropArea && fileInput) {
+        
+        // Check for critical elements
+        const criticalElements = [
+            'dropArea', 'fileInput', 'fileList', 'processBtn',
+            'infoAlert', 'infoMessage', 'errorAlert', 'errorMessage',
+            'previewContainer', 'previewImages', 'downloadBtn'
+        ];
+        
+        const missingCriticalElements = criticalElements.filter(
+            name => !elements[name]
+        );
+        
+        if (missingCriticalElements.length > 0) {
+            console.error('Missing critical elements:', missingCriticalElements.join(', '));
+            const errorMsg = `Failed to initialize. Missing required UI elements. Please refresh the page.`;
+            if (errorMessage) {
+                errorMessage.textContent = errorMsg;
+                errorAlert.style.display = 'block';
+            } else {
+                alert(errorMsg);
+            }
+            return;
+        }
+        
+        // Set up event listeners
+        try {
             setupEventListeners();
-        } else {
-            console.error('Required elements not found');
-            if (!dropArea) console.error('Drop zone element not found');
-            if (!fileInput) console.error('File input element not found');
+            console.log('Event listeners initialized successfully');
+            
+            // Show a welcome message if infoMessage is available
+            if (infoMessage) {
+                infoMessage.textContent = 'Drag and drop your photos or click to browse';
+                infoAlert.style.display = 'block';
+            }
+        } catch (error) {
+            console.error('Error initializing event listeners:', error);
+            const errorMsg = 'Failed to initialize. Please refresh the page.';
+            if (errorMessage) {
+                errorMessage.textContent = errorMsg;
+                errorAlert.style.display = 'block';
+            } else {
+                alert(errorMsg);
+            }
         }
     }
 
@@ -49,7 +138,25 @@
         
         console.log('Setting up event listeners');
 
-        // Drag and drop events
+        // Clean up any existing event listeners first
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.removeEventListener(eventName, preventDefaults, false);
+            document.body.removeEventListener(eventName, preventDefaults, false);
+        });
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.removeEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.removeEventListener(eventName, unhighlight, false);
+        });
+
+        dropArea.removeEventListener('drop', handleDrop, false);
+        dropArea.removeEventListener('click', handleDropAreaClick);
+        fileInput.removeEventListener('change', handleFileSelect, false);
+        
+        // Set up drag and drop events
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropArea.addEventListener(eventName, preventDefaults, false);
             document.body.addEventListener(eventName, preventDefaults, false);
@@ -72,32 +179,34 @@
         // Handle browse button click
         const browseBtn = document.getElementById('browseBtn');
         if (browseBtn) {
-            browseBtn.addEventListener('click', (e) => {
+            // Remove any existing click handlers
+            const newBrowseBtn = browseBtn.cloneNode(true);
+            browseBtn.parentNode.replaceChild(newBrowseBtn, browseBtn);
+            
+            newBrowseBtn.addEventListener('click', (e) => {
                 e.preventDefault();
+                e.stopPropagation();
+                console.log('Browse button clicked');
                 fileInput.click();
             });
         }
         
         // Handle file selection
         fileInput.addEventListener('change', handleFileSelect, false);
+        
         // Handle process button click
+        const processBtn = document.getElementById('processBtn');
         if (processBtn) {
-            processBtn.addEventListener('click', (e) => {
+            // Remove any existing click handlers
+            const newProcessBtn = processBtn.cloneNode(true);
+            processBtn.parentNode.replaceChild(newProcessBtn, processBtn);
+            
+            newProcessBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 if (selectedFiles.length > 0) {
                     processUploadedFiles();
                 } else {
                     showAlert('Please select files to process', 'warning');
-                }
-            });
-        }
-        
-        // Handle download button click
-        if (downloadBtn) {
-            downloadBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                if (downloadBtn.href && downloadBtn.href !== '#') {
-                    window.location.href = downloadBtn.href;
                 }
             });
         }
@@ -179,24 +288,48 @@
 
     // Update the file input with current selection
     function updateFileInput() {
-        const dataTransfer = new DataTransfer();
-        selectedFiles.forEach(file => dataTransfer.items.add(file));
-        fileInput.files = dataTransfer.files;
-    }
-    
-    // Handle click on drop area - only trigger file input if not clicking on a button or input
-    function handleDropAreaClick(e) {
-        if (e.target === dropArea || e.target.classList.contains('drop-zone-text')) {
-            fileInput.click();
+        try {
+            if (!fileInput) {
+                console.warn('File input element not found');
+                return;
+            }
+            
+            // Only update if we have files
+            if (selectedFiles.length > 0) {
+                const dataTransfer = new DataTransfer();
+                // Filter out any invalid file entries
+                selectedFiles.forEach(file => {
+                    if (file instanceof File) {
+                        dataTransfer.items.add(file);
+                    }
+                });
+                
+                // Only update if we have valid files
+                if (dataTransfer.files.length > 0) {
+                    fileInput.files = dataTransfer.files;
+                } else {
+                    fileInput.value = '';
+                }
+            } else {
+                fileInput.value = '';
+            }
+        } catch (error) {
+            console.error('Error updating file input:', error);
+            // Fallback to basic reset if there's an error
+            if (fileInput) {
+                fileInput.value = '';
+            }
         }
     }
     
-    // Handle file selection via input
-    function handleFileSelect(e) {
-        console.log('=== Files Selected ===');
-    // Process uploaded files
+    
+    /**
+     * Process uploaded files through the server
+     * Handles both the initial upload and processing phases
+     */
     function processUploadedFiles() {
         console.log('=== Processing Files ===');
+        
         if (selectedFiles.length === 0) {
             showAlert('No files to process', 'warning');
             return;
@@ -214,12 +347,20 @@
         
         if (invalidFiles.length > 0) {
             const errorList = invalidFiles.map(file => 
-                `${file.name}: ${!CONFIG.allowedTypes.includes(file.type) ? 
-                    'Unsupported file type' : 'File too large'}`
+                `${file.name}: ${
+                    !CONFIG.allowedTypes.includes(file.type) ? 
+                    'Unsupported file type' : 
+                    `File too large (max ${formatFileSize(CONFIG.maxFileSize)})`
+                }`
             ).join('\n');
             
             showAlert(`Cannot process the following files:\n${errorList}`, 'danger');
             return false;
+        }
+        
+        if (formSubmitted) {
+            console.warn('Processing already in progress, ignoring duplicate request');
+            return;
         }
         
         console.log('Selected files count:', selectedFiles.length);
@@ -528,7 +669,17 @@
     
     // Handle click on drop area
     function handleDropAreaClick(e) {
-        if (e.target === dropArea || e.target.classList.contains('drop-zone-text')) {
+        // Ignore clicks on the browse button or file input
+        if (e.target.closest('#browseBtn') || e.target === fileInput) {
+            return;
+        }
+        
+        // Only trigger file input if clicking directly on the drop zone or its text
+        if (e.target === dropArea || 
+            e.target.classList.contains('drop-zone-text') ||
+            e.target.closest('.drop-zone-text')) {
+            e.preventDefault();
+            e.stopPropagation();
             fileInput.click();
         }
     }
@@ -616,7 +767,7 @@
             previewToggle.innerHTML = '<i class="fas fa-eye me-1"></i> Preview';
             previewToggle.setAttribute('aria-label', `Preview ${file.name}`);
             previewToggle.title = 'Preview image';
-            previewToggle.onclick = () => togglePreview(file, index);
+            previewToggle.onclick = (e) => togglePreview(file, index, e);
             
             const removeBtn = document.createElement('button');
             removeBtn.type = 'button';
@@ -624,7 +775,7 @@
             removeBtn.innerHTML = '<i class="fas fa-trash-alt me-1"></i> Remove';
             removeBtn.setAttribute('aria-label', `Remove ${file.name}`);
             removeBtn.title = 'Remove file';
-            removeBtn.onclick = () => removeFile(index);
+            removeBtn.onclick = (e) => removeFile(index, e);
             
             fileActions.appendChild(fileSize);
             fileActions.appendChild(previewToggle);
@@ -651,51 +802,227 @@
     }
     
     // Toggle preview for a file
-    function togglePreview(file, index) {
-        const previewContainer = document.getElementById('previewContainer');
-        if (!previewContainer) return;
-
-        // Clear existing preview
-        while (previewContainer.firstChild) {
-            previewContainer.removeChild(previewContainer.firstChild);
-        }
-
-        // Create preview elements
-        const preview = document.createElement('div');
-        preview.className = 'preview-container mt-3';
-        
-        const img = document.createElement('img');
-        img.className = 'img-fluid rounded shadow-sm';
-        img.alt = `Preview of ${file.name}`;
-        img.style.maxHeight = '500px';
-        
-        const reader = new FileReader();
-        fileReaders.push(reader);
-        
-        reader.onload = function(e) {
-            img.src = e.target.result;
-        };
-        
-        reader.onerror = function() {
-            console.error('Error reading file:', file.name);
-            showAlert(`Error loading preview for ${file.name}`, 'danger');
-        };
-        
-        reader.readAsDataURL(file);
-        preview.appendChild(img);
-        previewContainer.appendChild(preview);
+function togglePreview(file, index, event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
     }
     
+    console.log('Toggling preview for file:', file.name);
+    
+    // Get or create preview elements
+    let previewContainer = document.getElementById('previewContainer');
+    let previewImages = document.getElementById('previewImages');
+    
+    // Create elements if they don't exist
+    if (!previewContainer) {
+        console.log('Creating preview container...');
+        previewContainer = document.createElement('div');
+        previewContainer.id = 'previewContainer';
+        previewContainer.className = 'preview-container';
+        previewContainer.style.display = 'none'; // Start hidden
+        document.querySelector('.container').appendChild(previewContainer);
+    }
+    
+    if (!previewImages) {
+        console.log('Creating preview images container...');
+        previewImages = document.createElement('div');
+        previewImages.id = 'previewImages';
+        previewContainer.appendChild(previewImages);
+    }
+
+    // Check if we're toggling the same file
+    const isSameFile = previewContainer.getAttribute('data-current-file') === file.name;
+    const isPreviewVisible = previewContainer.style.display !== 'none';
+    
+    if (isPreviewVisible && isSameFile) {
+        console.log('Hiding preview for', file.name);
+        previewContainer.style.display = 'none';
+        previewContainer.removeAttribute('data-current-file');
+        previewContainer.innerHTML = ''; // Clear the container
+        return;
+    }
+
+    console.log('Showing preview for:', file.name);
+    
+    // Clear existing preview
+    previewImages.innerHTML = '';
+    
+    // Set current file
+    previewContainer.setAttribute('data-current-file', file.name);
+    
+    // Create loading indicator
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'text-center py-4';
+    loadingDiv.innerHTML = `
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="mt-2 mb-0">Loading preview...</p>
+    `;
+
+    // Create image element
+    const img = document.createElement('img');
+    img.className = 'preview-image';
+    img.alt = 'Preview: ' + file.name;
+    img.style.display = 'none'; // Hide until loaded
+    
+    // Create card structure
+    const card = document.createElement('div');
+    card.className = 'card shadow-sm';
+    
+    const cardHeader = document.createElement('div');
+    cardHeader.className = 'card-header bg-white d-flex justify-content-between align-items-center';
+    cardHeader.innerHTML = `
+        <h5 class="mb-0">Preview: ${file.name}</h5>
+        <button type="button" class="btn-close" aria-label="Close"></button>
+    `;
+    
+    const cardBody = document.createElement('div');
+    cardBody.className = 'card-body p-0';
+    
+    const imgContainer = document.createElement('div');
+    imgContainer.className = 'img-preview-container';
+    imgContainer.appendChild(loadingDiv);
+    imgContainer.appendChild(img);
+    
+    // Build the card
+    cardBody.appendChild(imgContainer);
+    card.appendChild(cardHeader);
+    card.appendChild(cardBody);
+    
+    // Create column
+    const col = document.createElement('div');
+    col.className = 'col-md-8 col-lg-6 mx-auto';
+    col.appendChild(card);
+    
+    // Add to preview
+    previewImages.appendChild(col);
+    
+    // Show the container
+    previewContainer.style.display = 'block';
+    
+    // Add close button handler
+    const closeBtn = cardHeader.querySelector('.btn-close');
+    closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        previewContainer.style.display = 'none';
+    };
+
+    // Create and configure FileReader
+    const reader = new FileReader();
+    fileReaders.push(reader); // Track for cleanup
+    
+    reader.onload = function(e) {
+        console.log('File read complete, setting image source');
+        img.src = e.target.result;
+    };
+    
+    reader.onerror = function() {
+        console.error('Error reading file');
+        loadingDiv.innerHTML = `
+            <div class="text-danger">
+                <i class="fas fa-exclamation-triangle fa-2x mb-2"></i>
+                <p class="mb-0">Error loading image preview</p>
+            </div>
+        `;
+    };
+    
+    img.onload = function() {
+        console.log('Image loaded successfully');
+        loadingDiv.style.display = 'none';
+        img.style.display = 'block';
+        
+        // Force reflow
+        void img.offsetHeight;
+        
+        // Scroll to preview
+        setTimeout(() => {
+            previewContainer.scrollIntoView({
+                behavior: 'smooth',
+                block: 'nearest'
+            });
+        }, 100);
+    };
+    
+    img.onerror = function() {
+        console.error('Error loading image');
+        loadingDiv.innerHTML = `
+            <div class="text-danger">
+                <i class="fas fa-exclamation-triangle fa-2x mb-2"></i>
+                <p class="mb-0">Error loading image preview</p>
+            </div>
+        `;
+    };
+    
+    // Start reading the file
+    console.log('Starting to read file as data URL');
+    try {
+        reader.readAsDataURL(file);
+    } catch (error) {
+        console.error('Error reading file:', error);
+        loadingDiv.innerHTML = `
+            <div class="text-danger">
+                <i class="fas fa-exclamation-triangle fa-2x mb-2"></i>
+                <p class="mb-0">Error: ${error.message}</p>
+            </div>
+        `;
+    }
+}
+    
     // Remove a file from the selection
-    function removeFile(index) {
-        // Remove the file from the selected files array
-        selectedFiles.splice(index, 1);
+    function removeFile(index, event) {
+        // Prevent any default behavior
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
         
-        // Update the file input to reflect the changes
-        updateFileInput();
-        
-        // Update the UI
-        updateFileList();
+        try {
+            // Remove the file from the selected files array
+            if (index >= 0 && index < selectedFiles.length) {
+                // Clean up any preview for this file
+                const previewContainer = document.getElementById('previewContainer');
+                if (previewContainer) {
+                    const currentFileIndex = previewContainer.getAttribute('data-file-index');
+                    if (currentFileIndex === index.toString()) {
+                        // Hide the container and clear its contents
+                        previewContainer.style.display = 'none';
+                        previewContainer.removeAttribute('data-file-index');
+                        previewContainer.innerHTML = '';
+                        
+                        // Remove any loading indicators
+                        const loadingDivs = previewContainer.querySelectorAll('.text-center.py-4');
+                        loadingDivs.forEach(div => div.remove());
+                    }
+                }
+                
+                // Remove the file
+                selectedFiles.splice(index, 1);
+                
+                // Update the UI first
+                updateFileList();
+                
+                // Then update the file input (if needed)
+                if (selectedFiles.length > 0) {
+                    updateFileInput();
+                } else {
+                    // If no files left, reset the input
+                    if (fileInput) {
+                        fileInput.value = '';
+                    }
+                }
+                
+                // Show feedback to the user
+                showAlert('File removed successfully', 'info');
+            } else {
+                console.error('Invalid file index:', index);
+                showAlert('Error: Could not remove file', 'error');
+            }
+        } catch (error) {
+            console.error('Error removing file:', error);
+            showAlert('Error removing file: ' + error.message, 'error');
+        }
     }
     
     // Clean up file readers to prevent memory leaks
@@ -828,17 +1155,132 @@
     }
 
     // Initialize the application when the DOM is fully loaded
-    document.addEventListener('DOMContentLoaded', function() {
+    window.initializeApp = function() {
         console.log('DOM fully loaded, initializing...');
+        
+        // Initialize all elements
+        const elementIds = {
+            dropZone: 'dropZone',
+            fileInput: 'fileInput',
+            fileList: 'fileList',
+            processBtn: 'processBtn',
+            processingIndicator: 'processingIndicator',
+            infoAlert: 'infoAlert',
+            infoMessage: 'infoMessage',
+            errorAlert: 'errorAlert',
+            errorMessage: 'errorMessage',
+            previewContainer: 'previewContainer',
+            previewImages: 'previewImages',
+            downloadBtn: 'downloadBtn'
+        };
+        
+        // Initialize elements object
+        Object.keys(elementIds).forEach(key => {
+            elements[key] = document.getElementById(elementIds[key]);
+        });
+        
+        // Check for required elements
+        const requiredElements = Object.keys(elementIds);
+        const missingElements = requiredElements.filter(id => !elements[id]);
+        
+        if (missingElements.length > 0) {
+            console.error('Missing required elements:', missingElements.join(', '));
+            
+            // Try to create missing preview container elements
+            if (missingElements.includes('previewContainer') || missingElements.includes('previewImages')) {
+                console.log('Attempting to create missing preview elements...');
+                const uploadContainer = document.querySelector('.upload-container');
+                if (uploadContainer) {
+                    const previewDiv = document.createElement('div');
+                    previewDiv.id = 'previewContainer';
+                    previewDiv.className = 'preview-container mt-4';
+                    previewDiv.style.display = 'none';
+                    
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    
+                    const cardHeader = document.createElement('div');
+                    cardHeader.className = 'card-header';
+                    
+                    const cardTitle = document.createElement('h5');
+                    cardTitle.className = 'card-title mb-0';
+                    cardTitle.textContent = 'Preview';
+                    
+                    const cardBody = document.createElement('div');
+                    cardBody.className = 'card-body';
+                    
+                    const previewImages = document.createElement('div');
+                    previewImages.id = 'previewImages';
+                    previewImages.className = 'row';
+                    
+                    cardHeader.appendChild(cardTitle);
+                    cardBody.appendChild(previewImages);
+                    
+                    card.appendChild(cardHeader);
+                    card.appendChild(cardBody);
+                    
+                    // Add download button in footer
+                    const cardFooter = document.createElement('div');
+                    cardFooter.className = 'card-footer text-end';
+                    
+                    const downloadBtn = document.createElement('a');
+                    downloadBtn.href = '#';
+                    downloadBtn.className = 'btn btn-primary';
+                    downloadBtn.id = 'downloadBtn';
+                    downloadBtn.style.display = 'none';
+                    downloadBtn.innerHTML = '<i class="fas fa-download me-2"></i>Download All';
+                    
+                    cardFooter.appendChild(downloadBtn);
+                    card.appendChild(cardFooter);
+                    
+                    previewDiv.appendChild(card);
+                    
+                    // Insert after the file list
+                    const fileList = document.getElementById('fileList');
+                    if (fileList && fileList.parentNode) {
+                        fileList.parentNode.insertBefore(previewDiv, fileList.nextSibling);
+                    } else {
+                        uploadContainer.appendChild(previewDiv);
+                    }
+                    
+                    // Update elements reference
+                    elements.previewContainer = previewDiv;
+                    elements.previewImages = previewImages;
+                    elements.downloadBtn = downloadBtn;
+                    
+                    console.log('Created preview container elements dynamically');
+                }
+            }
+        }
+        
+        // Initialize the application
         init();
         
-        // Manually attach the form submit handler
+        // Set up form submission
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
-            console.log('Found upload form, attaching submit handler');
             uploadForm.addEventListener('submit', handleFormSubmit);
-        } else {
-            console.error('Could not find upload form element');
         }
-    });
+        
+        // Set up process button
+        if (elements.processBtn) {
+            elements.processBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                processUploadedFiles();
+            });
+        }
+        
+        // Log final element status
+        console.log('Element initialization complete');
+        console.log('Preview container:', elements.previewContainer);
+        console.log('Preview images container:', elements.previewImages);
+    }
+    
+    // Wait for DOM to be fully loaded
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeApp);
+    } else {
+        // DOMContentLoaded has already fired
+        setTimeout(initializeApp, 0);
+    }
 })();
