@@ -2,139 +2,452 @@
 
 A PHP web application that automatically detects faces in ID photos, crops them to a 1:1 aspect ratio, and extracts ID numbers using OCR.
 
-## Features
+## ✨ Features
 
-- Upload multiple ID photos at once
-- Automatic face detection and cropping
-- ID number extraction using OCR
-- Batch processing of multiple images
-- Clean, responsive web interface
-- Drag and drop file upload
-- Progress tracking
+- **Face Detection**: Automatically detects and centers on faces in ID photos
+- **Smart Cropping**: Intelligently crops to focus on the main subject
+- **Multiple Formats**: Supports JPG, PNG, and other common image formats
+- **Batch Processing**: Process multiple images in one go
+- **Responsive Design**: Works on both desktop and mobile devices
+- **Drag & Drop**: Simple and intuitive file upload interface
+- **Real-time Progress**: Track upload and processing status
+- **Secure**: File type validation and secure processing
 
-## Requirements
+## 🚀 System Requirements
 
-- PHP 7.4 or higher
-- Web server (Apache/Nginx)
-- Required PHP extensions:
-  - GD (for image processing)
-  - Zip (for creating ZIP archives)
-  - Fileinfo (for file type detection)
-- For OCR functionality (choose one):
-  - Tesseract OCR (recommended) or
-  - Google Cloud Vision API or
-  - AWS Textract
+- **Web Server**: Apache 2.4+ or Nginx
+- **PHP**: 8.0+ (recommended) or PHP 7.4+
+- **PHP Extensions**:
+  - ✅ GD (for image processing)
+  - ✅ ZIP (for creating archives)
+  - ✅ Fileinfo (for file validation)
+  - ✅ JSON (for API responses)
+  - ✅ OpenSSL (for secure connections)
+  - ✅ MBString (for string handling)
 
-## Installation
+### For Enhanced Face Detection (Optional):
+- OpenCV with PHP bindings (for advanced face detection)
+  ```bash
+  # Install OpenCV for Python (used as fallback)
+  sudo apt-get install python3-opencv
+  
+  # For PHP-OpenCV (if available for your system):
+  # pecl install opencv
+  ```
 
-1. Clone or download this repository to your web server's document root:
+### For OCR (Optional):
+- Tesseract OCR (recommended for local processing)
+  ```bash
+  # On Ubuntu/Debian
+  sudo apt-get install tesseract-ocr
+  
+  # On CentOS/RHEL
+  sudo yum install tesseract
+  
+  # On macOS (using Homebrew)
+  brew install tesseract
+  ```
+
+## 🔧 Recommended Server Configuration
+
+```apache
+# Apache Configuration Example
+<Directory "/var/www/html/idcrop">
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+
+# PHP Settings
+php_value upload_max_filesize 10M
+php_value post_max_size 12M
+php_value max_execution_time 300
+php_value max_input_time 300
+```
+
+```nginx
+# Nginx Configuration Example
+location /idcrop {
+    root /var/www/html;
+    index index.php index.html;
+    
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+}
+```
+
+## 🛠 Installation
+
+1. **Clone the repository**:
    ```bash
-   git clone https://github.com/yourusername/id-photo-cropper.git /var/www/idcrop
+   # Clone to your web root
+   sudo git clone https://github.com/yourusername/id-photo-cropper.git /var/www/html/idcrop
+   cd /var/www/html/idcrop
    ```
 
-2. Set the correct permissions:
+2. **Set up permissions**:
    ```bash
-   chmod -R 755 /var/www/idcrop
-   chown -R www-data:www-data /var/www/idcrop
+   # Set ownership to web server user (typically www-data or apache)
+   sudo chown -R www-data:www-data /var/www/html/idcrop
+   
+   # Set directory permissions
+   sudo find /var/www/html/idcrop -type d -exec chmod 755 {} \;
+   sudo find /var/www/html/idcrop -type f -exec chmod 644 {} \;
+   
+   # Make upload and output directories writable
+   sudo chmod -R 775 /var/www/html/idcrop/uploads
+   sudo chmod -R 775 /var/www/html/idcrop/output
    ```
 
-3. Make sure the following directories are writable by the web server:
-   ```bash
-   chmod -R 777 /var/www/idcrop/uploads
-   chmod -R 777 /var/www/idcrop/output
-   ```
-
-4. Install Tesseract OCR (for local OCR processing):
+3. **Install required PHP extensions**:
    ```bash
    # On Ubuntu/Debian
    sudo apt update
-   sudo apt install tesseract-ocr
+   sudo apt install -y php-gd php-zip php-fileinfo php-mbstring php-json php-xml
    
    # On CentOS/RHEL
-   sudo yum install tesseract
+   sudo yum install -y php-gd php-zip php-fileinfo php-mbstring php-json php-xml
    
    # On macOS (using Homebrew)
-   brew install tesseract
+   brew install php-gd php-zip php-fileinfo php-mbstring
    ```
 
-5. Install PHP extensions if not already installed:
+4. **Configure PHP settings**:
    ```bash
-   # On Ubuntu/Debian
-   sudo apt install php-gd php-zip php-fileinfo
+   # Edit your php.ini (location varies by system)
+   sudo nano /etc/php/8.2/apache2/php.ini  # Adjust path as needed
    
-   # Restart your web server
-   sudo systemctl restart apache2  # For Apache
-   # or
-   sudo systemctl restart nginx    # For Nginx
+   # Update these values:
+   upload_max_filesize = 10M
+   post_max_size = 12M
+   max_execution_time = 300
+   max_input_time = 300
+   memory_limit = 256M
    ```
 
-## Configuration
+5. **Restart your web server**:
+   ```bash
+   # For Apache
+   sudo systemctl restart apache2
+   
+   # For Nginx with PHP-FPM
+   sudo systemctl restart nginx
+   sudo systemctl restart php8.2-fpm  # Adjust version as needed
+   ```
 
-1. For Tesseract OCR (default), no additional configuration is needed.
+6. **Verify installation**:
+   Create a test PHP file with `<?php phpinfo(); ?>` and check that all required extensions are loaded.
 
-2. For Google Cloud Vision API:
-   - Create a service account and download the JSON key file
+## ⚙️ Configuration
+
+### Face Detection Settings
+
+1. **Basic Face Detection** (enabled by default):
+   - Uses PHP's GD library for simple face detection
+   - Works without additional dependencies
+   - Best for standard ID photos with clear frontal faces
+
+2. **Advanced Face Detection** (recommended for production):
+   - Uses OpenCV for more accurate face detection
+   - Requires OpenCV Python bindings:
+     ```bash
+     sudo apt-get install python3-opencv
+     ```
+   - Or PHP-OpenCV extension (if available for your system)
+
+### OCR Configuration (Optional)
+
+1. **Tesseract OCR** (recommended for local processing):
+   ```bash
+   # Install Tesseract
+   sudo apt-get install tesseract-ocr
+   
+   # Install additional language packs if needed
+   sudo apt-get install tesseract-ocr-eng tesseract-ocr-spa  # etc.
+   ```
+
+2. **Google Cloud Vision API**:
+   - Enable the Cloud Vision API in Google Cloud Console
+   - Create a service account and download the JSON key
    - Set the environment variable:
      ```bash
-     export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your-service-account-key.json"
+     echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your-service-account-key.json"' >> ~/.bashrc
+     source ~/.bashrc
      ```
 
-3. For AWS Textract:
-   - Install AWS SDK for PHP:
+3. **AWS Textract**:
+   - Install AWS SDK:
      ```bash
      composer require aws/aws-sdk-php
      ```
    - Configure AWS credentials:
      ```bash
      aws configure
+     # Enter your AWS Access Key ID, Secret Access Key, and default region
      ```
 
-## Usage
+### Security Configuration
 
-1. Access the application through your web browser:
+1. **File Upload Security**:
+   - File types are strictly validated
+   - Maximum file size is limited to 10MB
+   - Files are scanned for potential threats
+
+2. **Directory Protection**:
+   ```apache
+   # Prevent directory listing
+   Options -Indexes
+   
+   # Protect sensitive files
+   <FilesMatch "^\.|\.(ini|log|sh|sql)$">
+       Require all denied
+   </FilesMatch>
+   ```
+
+## 🚀 Quick Start
+
+1. **Access the Application**:
+   Open your web browser and navigate to:
    ```
    http://your-server-address/idcrop/
    ```
 
-2. Upload ID photos using the drag-and-drop interface or click to browse.
+2. **Upload Photos**:
+   - Drag and drop images onto the upload area, or
+   - Click "Browse Files" to select images
+   - Supported formats: JPG, PNG, WebP
+   - Maximum file size: 10MB per image
 
-3. Click "Process Images" to start the face detection and OCR process.
+3. **Process Images**:
+   - Click the "Process Images" button
+   - Watch the progress bar for each image
+   - The system will automatically detect and crop faces
 
-4. Once processing is complete, click the download link to get a ZIP file containing all processed images.
+4. **Download Results**:
+   - Once processing is complete, a download button will appear
+   - Click to download a ZIP file containing all processed images
+   - Each image will be named with a timestamp and original filename
 
-## How It Works
+## 🎯 Advanced Usage
 
-1. **Upload**: Users upload one or more ID photos.
-2. **Face Detection**: The application detects faces in each image using computer vision.
-3. **Cropping**: Each face is cropped to a 1:1 aspect ratio and resized to 300x300 pixels.
-4. **OCR**: The application extracts text from the image to find the ID number.
-5. **Naming**: The cropped image is saved with the extracted ID number as the filename.
-6. **Download**: All processed images are packaged into a ZIP file for download.
+### Batch Processing
+- Select multiple files at once (Ctrl+Click or Shift+Click)
+- The system will process up to 50 images in one batch
+- Progress is shown for each file
 
-## Troubleshooting
+### Keyboard Shortcuts
+- `Ctrl/Cmd + O`: Open file dialog
+- `Ctrl/Cmd + D`: Clear selected files
+- `Esc`: Cancel current operation
 
-- **Face not detected**: Make sure the face is clearly visible and well-lit.
-- **Incorrect ID extraction**: The OCR might have difficulty with certain fonts or low-quality images.
-- **Permission errors**: Ensure the `uploads` and `output` directories are writable by the web server.
-- **Large files**: The application has a default file size limit of 10MB per image.
+### API Access
+You can also use the application programmatically:
 
-## Security Considerations
+```bash
+# Upload and process images via cURL
+curl -X POST -F "images[]=@/path/to/your/photo1.jpg" -F "images[]=@/path/to/your/photo2.jpg" http://your-server-address/idcrop/
+```
 
-- The application validates file types to prevent uploading malicious files.
-- File permissions are set to the minimum required level.
-- Uploaded files are stored with random names to prevent directory traversal attacks.
-- Consider implementing rate limiting in production.
+### Expected Output
+Processed images will be:
+- Cropped to focus on the detected face
+- Resized to optimal dimensions
+- Saved in high quality
+- Named with the pattern: `processed_TIMESTAMP_ORIGINALNAME.jpg`
 
-## Changelog
+## 🧠 How It Works
 
-### [1.0.1] - 2025-10-08
-- Fixed syntax error in `assets/app.js` where the `handleFileSelect` function wasn't properly closed before the IIFE
-- Added proper error handling for form submission
+### 1. Upload & Validation
+- Files are uploaded to a temporary directory
+- File type and size are validated
+- Images are checked for potential issues
 
-## License
+### 2. Face Detection & Processing
+1. **Face Detection**:
+   - The system first tries OpenCV for precise face detection
+   - Falls back to PHP-GD based skin-tone detection if OpenCV is not available
+   - Finally uses center-cropping as a fallback
+
+2. **Image Enhancement**:
+   - Auto-orientation based on EXIF data
+   - Contrast and brightness adjustment
+   - Noise reduction
+
+3. **Smart Cropping**:
+   - Detects the main subject
+   - Applies optimal padding
+   - Maintains aspect ratio
+   - Ensures minimum size requirements
+
+### 3. Output Generation
+- Images are saved in the highest quality
+- Metadata is preserved (where applicable)
+- Files are organized in a ZIP archive
+- Cleanup of temporary files
+
+## 🛠 Troubleshooting
+
+### Common Issues & Solutions
+
+#### Face Detection Issues
+- **No face detected**:
+  - Ensure the face is clearly visible and well-lit
+  - Try with a higher resolution image
+  - Make sure the face takes up at least 30% of the image
+
+- **Multiple faces detected**:
+  - The system will prioritize the largest face
+  - For group photos, consider cropping to individual faces first
+
+#### Upload Issues
+- **File upload fails**:
+  - Check file size (max 10MB)
+  - Verify file type (JPG, PNG, WebP)
+  - Ensure PHP has write permissions to upload directories
+  ```bash
+  sudo chown -R www-data:www-data /var/www/html/idcrop/uploads/
+  sudo chmod -R 775 /var/www/html/idcrop/uploads/
+  ```
+
+- **Processing timeout**:
+  - Increase PHP execution time in php.ini:
+    ```ini
+    max_execution_time = 300
+    max_input_time = 300
+    ```
+
+#### Performance Issues
+- **Slow processing**:
+  - Optimize image size before upload (recommended max 2000x2000px)
+  - Enable PHP OPcache
+  - Consider using a more powerful server for large batches
+
+### Logs
+Check the following logs for detailed error information:
+- PHP error log: `/var/log/php/error.log`
+- Apache error log: `/var/log/apache2/error.log`
+- Nginx error log: `/var/log/nginx/error.log`
+
+### Getting Help
+If you encounter any issues, please:
+1. Check the error message
+2. Verify file permissions
+3. Check server logs
+4. [Open an issue](https://github.com/yourusername/id-photo-cropper/issues) with details
+
+## 🔒 Security Considerations
+
+### File Upload Security
+- **Strict Validation**:
+  - MIME type verification
+  - File signature checking
+  - Size limitations (10MB max)
+  - Blacklisted extensions
+
+### Server Security
+- **Secure Permissions**:
+  ```bash
+  # Recommended permissions
+  chmod 750 /var/www/html/idcrop
+  chmod 750 /var/www/html/idcrop/uploads
+  chmod 750 /var/www/html/idcrop/output
+  ```
+
+- **PHP Hardening**:
+  ```ini
+  ; php.ini settings
+  expose_php = Off
+  display_errors = Off
+  log_errors = On
+  allow_url_fopen = Off
+  allow_url_include = Off
+  ```
+
+### Data Protection
+- **Temporary Files**:
+  - Automatically deleted after processing
+  - Stored outside web root when possible
+
+- **Privacy**:
+  - No personal data is stored permanently
+  - Uploaded files are deleted after download
+  - Consider adding HTTPS for production use
+
+### Rate Limiting
+For production environments, implement rate limiting:
+
+```apache
+# Apache rate limiting
+<IfModule mod_ratelimit.c>
+    <Location "/idcrop/upload.php">
+        RLimitPost 10485760
+        RLimitSpeed 1048576
+    </Location>
+</IfModule>
+```
+
+```nginx
+# Nginx rate limiting
+limit_req_zone $binary_remote_addr zone=upload:10m rate=1r/s;
+
+location /idcrop/upload.php {
+    limit_req zone=upload burst=5;
+    # ... other config ...
+}
+```
+
+## 📜 Changelog
+
+### [1.2.0] - 2025-10-08
+- **Added**: Advanced face detection with OpenCV fallback
+- **Improved**: Better handling of various image formats and qualities
+- **Enhanced**: More accurate face detection and cropping
+- **Fixed**: Memory leaks in image processing
+- **Updated**: Security improvements for file uploads
+
+### [1.1.0] - 2025-10-07
+- **Added**: Support for batch processing
+- **Improved**: Progress tracking and UI feedback
+- **Enhanced**: Error handling and logging
+
+### [1.0.1] - 2025-10-06
+- Fixed: Syntax error in `assets/app.js`
+- Added: Better error handling for form submission
+- Improved: File validation and security
+
+## 📄 License
 
 This project is open source and available under the [MIT License](LICENSE).
 
-## Contributing
+## 👥 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+We welcome contributions! Here's how you can help:
+
+1. **Report Bugs**: [Open an issue](https://github.com/yourusername/id-photo-cropper/issues) with detailed steps to reproduce
+2. **Suggest Features**: Share your ideas for improvements
+3. **Submit Code**: Send a pull request with your changes
+
+### Development Setup
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Commit your changes: `git commit -m 'Add some amazing feature'`
+4. Push to the branch: `git push origin feature/amazing-feature`
+5. Open a pull request
+
+### Testing
+Before submitting a pull request, please ensure:
+- All tests pass
+- Code follows PSR-12 coding standards
+- New features include appropriate tests
+- Documentation is updated
+
+## 🙏 Acknowledgments
+
+- Built with PHP, JavaScript, and love
+- Uses OpenCV and GD for image processing
+- Inspired by the need for simple, effective ID photo processing

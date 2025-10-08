@@ -213,7 +213,7 @@ const IDPhotoCropper = (function() {
     }
 
     /**
-     * Update the file list display
+     * Update the file list display with progress bar containers
      */
     function updateFileList() {
         if (!elements.fileList) return;
@@ -229,18 +229,46 @@ const IDPhotoCropper = (function() {
             return;
         }
 
-        // Create list items for each file
+        // Create list items for each file with progress container
         state.selectedFiles.forEach((file, index) => {
             const item = document.createElement('div');
-            item.className = 'file-item d-flex justify-content-between align-items-center mb-2';
+            item.className = 'file-item';
+            item.dataset.filename = file.name;
             
-            const fileInfo = document.createElement('span');
-            fileInfo.textContent = `${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+            // File info container
+            const fileInfo = document.createElement('div');
+            fileInfo.className = 'file-info';
+            fileInfo.style.flex = '1';
             
+            // File name and size
+            const fileName = document.createElement('div');
+            fileName.className = 'file-name';
+            fileName.textContent = file.name;
+            
+            const fileSize = document.createElement('div');
+            fileSize.className = 'file-size text-muted';
+            fileSize.textContent = `${(file.size / 1024).toFixed(2)} KB`;
+            
+            // Progress container (initially hidden)
+            const progressContainer = document.createElement('div');
+            progressContainer.className = 'progress-container';
+            progressContainer.style.display = 'none';
+            progressContainer.style.marginTop = '8px';
+            
+            // Remove button
             const removeBtn = document.createElement('button');
-            removeBtn.className = 'btn btn-sm btn-outline-danger';
+            removeBtn.className = 'btn btn-sm btn-outline-danger ms-2';
             removeBtn.innerHTML = '&times;';
-            removeBtn.onclick = () => removeFile(index);
+            removeBtn.style.flexShrink = '0';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                removeFile(index);
+            };
+            
+            // Assemble the file item
+            fileInfo.appendChild(fileName);
+            fileInfo.appendChild(fileSize);
+            fileInfo.appendChild(progressContainer);
             
             item.appendChild(fileInfo);
             item.appendChild(removeBtn);
@@ -381,27 +409,192 @@ const IDPhotoCropper = (function() {
      * Process the selected files
      */
     /**
-     * Upload selected files to the server
+     * Create a progress bar for a file upload within the file list item
+     */
+    function createProgressBar(file, fileItem) {
+        // Find the progress container in the file item
+        const progressContainer = fileItem.querySelector('.progress-container');
+        if (!progressContainer) return null;
+        
+        // Clear any existing progress bar
+        progressContainer.innerHTML = '';
+        progressContainer.style.display = 'block';
+        
+        // Create the progress bar
+        const progressBar = document.createElement('div');
+        progressBar.style.height = '6px';
+        progressBar.style.width = '100%';
+        progressBar.style.backgroundColor = '#e9ecef';
+        progressBar.style.borderRadius = '3px';
+        progressBar.style.overflow = 'hidden';
+        
+        const progressBarInner = document.createElement('div');
+        progressBarInner.style.height = '100%';
+        progressBarInner.style.width = '0%';
+        progressBarInner.style.backgroundColor = '#0d6efd';
+        progressBarInner.style.transition = 'width 0.3s ease, background-color 0.3s';
+        
+        progressBar.appendChild(progressBarInner);
+        
+        // Add status text element
+        const statusText = document.createElement('div');
+        statusText.className = 'text-end';
+        statusText.style.fontSize = '0.75rem';
+        statusText.style.marginTop = '4px';
+        statusText.style.color = '#6c757d';
+        statusText.textContent = 'Waiting...';
+        
+        // Add elements to container
+        progressContainer.appendChild(progressBar);
+        progressContainer.appendChild(statusText);
+        
+        return {
+            update: (percent) => {
+                const rounded = Math.round(percent);
+                progressBarInner.style.width = `${rounded}%`;
+                statusText.textContent = `Uploading... ${rounded}%`;
+                
+                // Update progress bar color based on completion
+                if (rounded >= 100) {
+                    progressBarInner.style.backgroundColor = '#198754'; // Green when complete
+                } else if (rounded > 75) {
+                    progressBarInner.style.backgroundColor = '#0dcaf0'; // Blue for high progress
+                } else if (rounded > 25) {
+                    progressBarInner.style.backgroundColor = '#0d6efd'; // Darker blue for medium progress
+                } else {
+                    progressBarInner.style.backgroundColor = '#6c757d'; // Gray for low progress
+                }
+            },
+            complete: () => {
+                progressBarInner.style.width = '100%';
+                progressBarInner.style.backgroundColor = '#198754';
+                statusText.textContent = 'Uploaded';
+                statusText.style.color = '#198754';
+            },
+            error: (message) => {
+                progressBarInner.style.width = '100%';
+                progressBarInner.style.backgroundColor = '#dc3545';
+                statusText.textContent = message || 'Upload failed';
+                statusText.style.color = '#dc3545';
+            }
+        };
+    }
+
+    /**
+     * Upload selected files to the server with progress tracking
      */
     async function uploadFiles() {
-        const formData = new FormData();
-        state.selectedFiles.forEach((file) => {
-            formData.append('images[]', file);
-        });
+        // Get all file items
+        const fileItems = document.querySelectorAll('#fileList .file-item');
+        const progressTrackers = [];
         
-        const response = await fetch('', {
-            method: 'POST',
-            body: formData,
-            signal: AbortSignal.timeout(CONFIG.timeout)
+        // Create progress trackers for each file item
+        state.selectedFiles.forEach((file, index) => {
+            const fileItem = fileItems[index];
+            if (fileItem) {
+                const tracker = createProgressBar(file, fileItem);
+                if (tracker) {
+                    progressTrackers.push(tracker);
+                } else {
+                    // If we couldn't create a progress bar, add a dummy tracker that does nothing
+                    progressTrackers.push({
+                        update: () => {},
+                        complete: () => {},
+                        error: () => {}
+                    });
+                }
+            }
         });
-        if (!response.ok) {
-            throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+
+        try {
+            // Upload each file individually to track progress per file
+            const results = [];
+            
+            for (let i = 0; i < state.selectedFiles.length; i++) {
+                const file = state.selectedFiles[i];
+                const progressTracker = progressTrackers[i];
+                
+                // Skip if no progress tracker was created
+                if (!progressTracker) continue;
+                
+                const formData = new FormData();
+                formData.append('images[]', file);
+                
+                const xhr = new XMLHttpRequest();
+                activeXHRs.add(xhr);
+                
+                // Remove XHR from tracking when done
+                const removeXHR = () => activeXHRs.delete(xhr);
+                xhr.addEventListener('loadend', removeXHR);
+                xhr.addEventListener('error', removeXHR);
+                xhr.addEventListener('abort', removeXHR);
+                
+                // Track upload progress
+                xhr.upload.addEventListener('progress', (event) => {
+                    if (event.lengthComputable) {
+                        const percentComplete = (event.loaded / event.total) * 100;
+                        progressTracker.update(percentComplete);
+                    }
+                });
+                
+                // Handle upload completion
+                const uploadPromise = new Promise((resolve, reject) => {
+                    xhr.onload = () => {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            try {
+                                const result = JSON.parse(xhr.responseText);
+                                if (result.success) {
+                                    progressTracker.complete();
+                                    resolve(result);
+                                } else {
+                                    progressTracker.error(result.message || 'Upload failed');
+                                    reject(new Error(result.message || 'Upload failed'));
+                                }
+                            } catch (e) {
+                                progressTracker.error('Invalid response');
+                                console.error('Error parsing response:', e);
+                                reject(new Error('Invalid server response'));
+                            }
+                        } else {
+                            progressTracker.error(`Error: ${xhr.status}`);
+                            reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+                        }
+                    };
+                    
+                    xhr.onerror = () => {
+                        progressTracker.error('Network error');
+                        reject(new Error('Network error during upload'));
+                    };
+                    
+                    xhr.ontimeout = () => {
+                        progressTracker.error('Timeout');
+                        reject(new Error('Upload timed out'));
+                    };
+                });
+                
+                // Start the upload
+                xhr.open('POST', '', true);
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                xhr.timeout = CONFIG.timeout;
+                xhr.send(formData);
+                
+                // Wait for this file to finish uploading before starting the next one
+                try {
+                    const result = await uploadPromise;
+                    results.push(result);
+                } catch (error) {
+                    console.error('Error uploading file:', error);
+                    // Continue with next file even if one fails
+                }
+            }
+            
+            // If we have any results, return the first one for backward compatibility
+            return results.length > 0 ? results[0] : { success: false, message: 'No files were uploaded successfully' };
+            
+        } catch (error) {
+            console.error('Upload error:', error);
+            throw error;
         }
-        const result = await response.json();
-        if (!result.success) {
-            throw new Error(result.message || 'Upload failed');
-        }
-        return result;
     }
 
     /**
@@ -664,10 +857,33 @@ const IDPhotoCropper = (function() {
         state.isProcessing = false;
     }
 
+    // Track active XHR requests for cleanup
+    const activeXHRs = new Set();
+    
+    // Clean up function to abort all active XHR requests
+    function cleanupXHRs() {
+        activeXHRs.forEach(xhr => {
+            try {
+                xhr.abort();
+            } catch (e) {
+                console.warn('Error aborting XHR:', e);
+            }
+        });
+        activeXHRs.clear();
+    }
+    
+    // Add event listener for page unload
+    if (typeof window !== 'undefined') {
+        window.addEventListener('beforeunload', cleanupXHRs);
+    }
+
     // Public API
     return {
         init,
-        cleanup,
+        cleanup: () => {
+            cleanupXHRs();
+            cleanup();
+        },
         getState: () => ({ ...state })
     };
 })();

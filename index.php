@@ -512,6 +512,107 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
     handleFileUpload();
 }
 
+// Function to detect face using OpenCV if available, or fall back to simpler method
+function detectFace($imagePath) {
+    // Try using OpenCV if available
+    if (extension_loaded('opencv')) {
+        try {
+            // Load the pre-trained face detection model
+            $faceCascade = new \CascadeClassifier();
+            $modelFile = '/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml';
+            
+            if (!file_exists($modelFile)) {
+                throw new Exception('Face detection model not found');
+            }
+            
+            if (!$faceCascade->load($modelFile)) {
+                throw new Exception('Failed to load face detection model');
+            }
+            
+            // Read the image
+            $image = \cv\imread($imagePath);
+            if ($image->empty()) {
+                throw new Exception('Failed to load image with OpenCV');
+            }
+            
+            // Convert to grayscale as face detection works better on grayscale images
+            $gray = new \Mat();
+            \cv\cvtColor($image, $gray, \cv\COLOR_BGR2GRAY);
+            
+            // Detect faces
+            $faces = new \RectVector();
+            $faceCascade->detectMultiScale($gray, $faces);
+            
+            // If we found faces, return the first one
+            if ($faces->size() > 0) {
+                $face = $faces->get(0);
+                return [
+                    'x' => $face->x,
+                    'y' => $face->y,
+                    'width' => $face->width,
+                    'height' => $face->height
+                ];
+            }
+        } catch (Exception $e) {
+            logMessage('OpenCV face detection failed: ' . $e->getMessage(), 'WARNING');
+        }
+    }
+    
+    // Fallback: Use face detection with PHP's GD
+    // This is a simpler method that looks for skin tones
+    $img = imagecreatefromjpeg($imagePath);
+    $width = imagesx($img);
+    $height = imagesy($img);
+    
+    // Sample points in the image to find skin tones
+    $samplePoints = [
+        ['x' => $width * 0.25, 'y' => $height * 0.25],
+        ['x' => $width * 0.5, 'y' => $height * 0.25],
+        ['x' => $width * 0.75, 'y' => $height * 0.25],
+        ['x' => $width * 0.4, 'y' => $height * 0.4],
+        ['x' => $width * 0.6, 'y' => $height * 0.4],
+    ];
+    
+    $skinPoints = [];
+    foreach ($samplePoints as $point) {
+        $rgb = imagecolorat($img, $point['x'], $point['y']);
+        $r = ($rgb >> 16) & 0xFF;
+        $g = ($rgb >> 8) & 0xFF;
+        $b = $rgb & 0xFF;
+        
+        // Simple skin tone detection (adjust these values based on your needs)
+        if ($r > 95 && $g > 40 && $b > 20 && 
+            ($r - $g > 15) && ($r > $g) && ($r > $b)) {
+            $skinPoints[] = $point;
+        }
+    }
+    
+    imagedestroy($img);
+    
+    // If we found skin tones, use the average position
+    if (count($skinPoints) > 2) {
+        $avgX = array_sum(array_column($skinPoints, 'x')) / count($skinPoints);
+        $avgY = array_sum(array_column($skinPoints, 'y')) / count($skinPoints);
+        
+        // Return a region around the detected face
+        $faceSize = min($width, $height) * 0.4; // 40% of the smaller dimension
+        return [
+            'x' => max(0, $avgX - $faceSize/2),
+            'y' => max(0, $avgY - $faceSize/2),
+            'width' => min($width, $faceSize * 1.5),  // Slightly wider than tall
+            'height' => min($height, $faceSize)
+        ];
+    }
+    
+    // Default: return center of image if no face/skin detected
+    return [
+        'x' => $width * 0.25,
+        'y' => $height * 0.25,
+        'width' => $width * 0.5,
+        'height' => $height * 0.5
+    ];
+}
+
 // Process an uploaded image with face detection and cropping
 function processImage($file, $uploadDir, $outputDir) {
     $result = [
@@ -520,6 +621,10 @@ function processImage($file, $uploadDir, $outputDir) {
         'output_path' => '',
         'original_path' => $file['tmp_name']
     ];
+    
+    // Initialize image resources
+    $image = null;
+    $cropped = null;
     
     try {
         // Ensure output directory exists and is writable
@@ -532,7 +637,7 @@ function processImage($file, $uploadDir, $outputDir) {
         }
         
         // Generate output filename with original extension
-        $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
         $filename = uniqid('processed_', true) . '.' . $ext;
         $outputPath = rtrim($outputDir, '/') . '/' . $filename;
         
@@ -541,11 +646,120 @@ function processImage($file, $uploadDir, $outputDir) {
             throw new Exception('Temporary file not found');
         }
         
-        // Copy the file to the output directory
-        if (!copy($file['tmp_name'], $outputPath)) {
-            $error = error_get_last();
-            throw new Exception('Failed to copy file: ' . ($error['message'] ?? 'Unknown error'));
+        // Get image info and create image resource
+        $imageInfo = getimagesize($file['tmp_name']);
+        if (!$imageInfo) {
+            throw new Exception('Invalid image file');
         }
+        
+        $mime = $imageInfo['mime'];
+        
+        // Create a temporary file for face detection
+        $tempImagePath = tempnam(sys_get_temp_dir(), 'face_detect_') . '.' . $ext;
+        if (!copy($file['tmp_name'], $tempImagePath)) {
+            throw new Exception('Failed to create temporary image for face detection');
+        }
+        
+        // Detect face in the image
+        $face = detectFace($tempImagePath);
+        
+        // Clean up temporary file
+        @unlink($tempImagePath);
+        
+        // Load the original image for processing
+        switch ($mime) {
+            case 'image/jpeg':
+            case 'image/jpg':
+                $image = @imagecreatefromjpeg($file['tmp_name']);
+                break;
+            case 'image/png':
+                $image = @imagecreatefrompng($file['tmp_name']);
+                break;
+            default:
+                throw new Exception('Unsupported image type: ' . $mime);
+        }
+        
+        if (!$image) {
+            throw new Exception('Failed to load image. The file might be corrupted or not a valid image.');
+        }
+        
+        // Get image dimensions
+        $width = imagesx($image);
+        $height = imagesy($image);
+        
+        // Ensure face coordinates are within image bounds
+        $faceX = max(0, min($width - 10, $face['x']));
+        $faceY = max(0, min($height - 10, $face['y']));
+        $faceWidth = min($width - $faceX, $face['width']);
+        $faceHeight = min($height - $faceY, $face['height']);
+        
+        // Add some padding around the detected face (20% of face size)
+        $paddingX = $faceWidth * 0.2;
+        $paddingY = $faceHeight * 0.2;
+        
+        $cropX = max(0, $faceX - $paddingX);
+        $cropY = max(0, $faceY - $paddingY);
+        $cropWidth = min($width - $cropX, $faceWidth + ($paddingX * 2));
+        $cropHeight = min($height - $cropY, $faceHeight + ($paddingY * 2));
+        
+        // Ensure minimum size
+        $minSize = min($width, $height) * 0.3; // At least 30% of the smaller dimension
+        if ($cropWidth < $minSize) {
+            $cropX = max(0, $cropX - (($minSize - $cropWidth) / 2));
+            $cropWidth = $minSize;
+        }
+        if ($cropHeight < $minSize) {
+            $cropY = max(0, $cropY - (($minSize - $cropHeight) / 2));
+            $cropHeight = $minSize;
+        }
+        
+        // Ensure we don't go out of bounds
+        $cropX = max(0, (int)$cropX);
+        $cropY = max(0, (int)$cropY);
+        $cropWidth = min($width - $cropX, (int)$cropWidth);
+        $cropHeight = min($height - $cropY, (int)$cropHeight);
+        
+        // Create a new true color image for the cropped face
+        $cropped = imagecreatetruecolor($cropWidth, $cropHeight);
+        
+        // Preserve transparency for PNG
+        if ($mime === 'image/png') {
+            imagealphablending($cropped, false);
+            imagesavealpha($cropped, true);
+            $transparent = imagecolorallocatealpha($cropped, 0, 0, 0, 127);
+            imagefill($cropped, 0, 0, $transparent);
+        } else {
+            // For JPEG, use white background
+            $white = imagecolorallocate($cropped, 255, 255, 255);
+            imagefill($cropped, 0, 0, $white);
+        }
+        
+        // Copy the face region from the original image to the new image
+        imagecopyresampled(
+            $cropped, $image,
+            0, 0, $cropX, $cropY,
+            $cropWidth, $cropHeight, $cropWidth, $cropHeight
+        );
+        
+        // Save the cropped image
+        $success = false;
+        switch ($mime) {
+            case 'image/jpeg':
+            case 'image/jpg':
+                $success = imagejpeg($cropped, $outputPath, 90);
+                break;
+            case 'image/png':
+                $success = imagepng($cropped, $outputPath, 9);
+                break;
+        }
+        
+        if (!$success) {
+            throw new Exception('Failed to save processed image');
+        }
+        
+        // Free up memory
+        imagedestroy($image);
+        imagedestroy($cropped);
         
         // Set proper permissions
         if (!chmod($outputPath, 0664)) {
@@ -553,12 +767,30 @@ function processImage($file, $uploadDir, $outputDir) {
         }
         
         $result['success'] = true;
-        $result['message'] = 'Image processed successfully';
+        $result['message'] = 'Image processed and cropped to face successfully';
         $result['output_path'] = $outputPath;
         
     } catch (Exception $e) {
         $result['message'] = $e->getMessage();
         logMessage('Image processing error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine(), 'ERROR');
+        
+        // Clean up any created resources
+        if (isset($image) && is_resource($image)) {
+            imagedestroy($image);
+        }
+        if (isset($cropped) && is_resource($cropped)) {
+            imagedestroy($cropped);
+        }
+        
+        // If we failed but have a partial output file, clean it up
+        if (isset($outputPath) && file_exists($outputPath)) {
+            @unlink($outputPath);
+        }
+        
+        // If we have a temporary file, clean it up
+        if (isset($tempImagePath) && file_exists($tempImagePath)) {
+            @unlink($tempImagePath);
+        }
     }
     
     return $result;
@@ -926,10 +1158,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
             font-weight: 500;
         }
         
+        /* Upload Progress Styles */
+        .upload-progress-container {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .upload-progress-container h5 {
+            color: #495057;
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        
+        .progress-container {
+            margin-bottom: 10px;
+            display: none; /* Hidden by default */
+        }
+        
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.85rem;
+            color: #6c757d;
+        }
+        
+        .progress-filename {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 70%;
+        }
+        
+        .progress-percentage {
+            font-weight: 600;
+            color: #0d6efd;
+        }
+        
+        .progress {
+            height: 8px;
+            border-radius: 4px;
+            background-color: #e9ecef;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            background-color: #0d6efd;
+            transition: width 0.3s ease;
+        }
+        
         .processing-indicator {
             display: none;
             text-align: center;
             margin: 1rem 0;
+        }
+        
         .processing-spinner {
             width: 2rem;
             height: 2rem;
@@ -966,6 +1253,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
             
             <div class="file-list" id="fileList">
                 <!-- Files will be listed here -->
+            </div>
+            
+            <!-- Upload Progress Section -->
+            <div id="uploadProgressContainer" class="upload-progress-container mt-3" style="display: none;">
+                <h5 class="mb-2">Upload Progress</h5>
+                <div id="uploadProgressBars">
+                    <!-- Progress bars will be added here dynamically -->
+                </div>
             </div>
             
             <div class="processing-indicator" id="processingIndicator">
