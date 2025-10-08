@@ -3,7 +3,8 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-$uploadDir = __DIR__ . '/uploads/';
+// Set the directory where processed files are stored
+$baseDir = __DIR__ . '/output/';
 
 // Check if file parameter is set
 if (!isset($_GET['file'])) {
@@ -12,7 +13,7 @@ if (!isset($_GET['file'])) {
 
 // Sanitize the filename to prevent directory traversal
 $filename = basename($_GET['file']);
-$filepath = $uploadDir . $filename;
+$filepath = $baseDir . $filename;
 
 // Check if file exists and is a ZIP file
 if (!file_exists($filepath) || !preg_match('/\.zip$/i', $filename)) {

@@ -999,8 +999,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
                             <!-- Preview images will be added here -->
                         </div>
                     </div>
-                    <div class="card-footer text-end">
-                        <a href="#" class="btn btn-primary" id="downloadBtn" style="display: none;">
+                    <!-- Download button moved outside the preview container -->
+                    </div>
+                    <!-- End of preview container -->
+                    
+                    <!-- Download button container -->
+                    <div class="text-end mt-3" id="downloadContainer" style="display: none;">
+                        <a href="#" class="btn btn-primary" id="downloadBtn">
                             <i class="fas fa-download me-2"></i>Download All
                         </a>
                     </div>

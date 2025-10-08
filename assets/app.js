@@ -66,6 +66,8 @@ const IDPhotoCropper = (function() {
     function cacheElements() {
         // Match elements with your HTML structure
         elements.dropArea = document.getElementById('dropZone');
+        elements.downloadBtn = document.getElementById('downloadBtn');
+        elements.downloadContainer = document.getElementById('downloadContainer');
         elements.fileInput = document.getElementById('fileInput');
         elements.browseBtn = document.getElementById('browseBtn');
         elements.processBtn = document.getElementById('processBtn');
@@ -266,6 +268,10 @@ const IDPhotoCropper = (function() {
     function updateProcessButton() {
         if (!elements.processBtn) return;
         elements.processBtn.disabled = state.selectedFiles.length === 0;
+        // Hide download container when files change
+        if (elements.downloadContainer) {
+            elements.downloadContainer.style.display = 'none';
+        }
     }
 
     /**
@@ -360,6 +366,12 @@ const IDPhotoCropper = (function() {
             elements.submitText.textContent = isProcessing ? 'Processing...' : 'Process Images';
         }
         
+        // Show/hide download container based on processing state
+        if (elements.downloadContainer) {
+            elements.downloadContainer.style.display = isProcessing ? 'none' : 
+                (elements.downloadContainer.getAttribute('data-visible') === 'true' ? 'block' : 'none');
+        }
+
         if (elements.spinner) {
             elements.spinner.style.display = isProcessing ? 'inline-block' : 'none';
         }
@@ -449,12 +461,11 @@ const IDPhotoCropper = (function() {
             }
             
             if (result.success) {
-                showAlert('Files processed successfully!', 'success');
-                if (result.download_url) {
-                    // Add a small delay to ensure the user sees the success message
-                    setTimeout(() => {
-                        window.location.href = result.download_url;
-                    }, 1000);
+                showAlert('Files processed successfully! Click Download to get your ZIP.', 'success');
+                if (elements.downloadBtn && elements.downloadContainer && result.download_url) {
+                    elements.downloadBtn.href = result.download_url;
+                    elements.downloadContainer.style.display = 'block';
+                    elements.downloadContainer.setAttribute('data-visible', 'true');
                 }
                 
                 // Clear the file list after successful processing
