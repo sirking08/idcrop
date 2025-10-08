@@ -15,29 +15,39 @@
     let fileReaders = []; // Track FileReader instances for cleanup
 
     // DOM Elements
-    const dropArea = document.getElementById('dropZone'); // Updated to match HTML ID
-    const fileInput = document.getElementById('fileInput'); // Updated to match HTML ID
+    const dropArea = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
     const fileList = document.getElementById('fileList');
-    const uploadForm = document.getElementById('uploadForm');
-    const progressContainer = document.getElementById('progressContainer');
-    const progressBar = document.getElementById('progressBar');
-    const progressText = document.getElementById('progressText');
-    const submitBtn = document.getElementById('processButton');
-    const submitText = document.getElementById('submitText');
-    const spinner = document.getElementById('spinner');
+    const processBtn = document.getElementById('processBtn');
+    const processingIndicator = document.getElementById('processingIndicator');
+    const infoAlert = document.getElementById('infoAlert');
+    const infoMessage = document.getElementById('infoMessage');
+    const errorAlert = document.getElementById('errorAlert');
+    const errorMessage = document.getElementById('errorMessage');
+    const previewContainer = document.getElementById('previewContainer');
+    const previewImages = document.getElementById('previewImages');
+    const downloadBtn = document.getElementById('downloadBtn');
     
     // Initialize the application
     function init() {
         console.log('=== IDCrop App Initialized ===');
-        setupEventListeners();
+        if (dropArea && fileInput) {
+            setupEventListeners();
+        } else {
+            console.error('Required elements not found');
+            if (!dropArea) console.error('Drop zone element not found');
+            if (!fileInput) console.error('File input element not found');
+        }
     }
 
     // Set up all event listeners
     function setupEventListeners() {
-        if (!dropArea || !fileInput || !uploadForm) {
+        if (!dropArea || !fileInput) {
             console.error('Required DOM elements not found');
-            return;
+            return false;
         }
+        
+        console.log('Setting up event listeners');
 
         // Drag and drop events
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -53,10 +63,44 @@
             dropArea.addEventListener(eventName, unhighlight, false);
         });
 
+        // Handle drop events
         dropArea.addEventListener('drop', handleDrop, false);
-        dropArea.addEventListener('click', handleDropAreaClick, false);
+        
+        // Handle click on drop area
+        dropArea.addEventListener('click', handleDropAreaClick);
+        
+        // Handle browse button click
+        const browseBtn = document.getElementById('browseBtn');
+        if (browseBtn) {
+            browseBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                fileInput.click();
+            });
+        }
+        
+        // Handle file selection
         fileInput.addEventListener('change', handleFileSelect, false);
-        uploadForm.addEventListener('submit', handleFormSubmit, false);
+        // Handle process button click
+        if (processBtn) {
+            processBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (selectedFiles.length > 0) {
+                    processUploadedFiles();
+                } else {
+                    showAlert('Please select files to process', 'warning');
+                }
+            });
+        }
+        
+        // Handle download button click
+        if (downloadBtn) {
+            downloadBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (downloadBtn.href && downloadBtn.href !== '#') {
+                    window.location.href = downloadBtn.href;
+                }
+            });
+        }
     }
     
     // Prevent default drag and drop behaviors
@@ -140,58 +184,27 @@
         fileInput.files = dataTransfer.files;
     }
     
-    dropArea.addEventListener('drop', handleDrop, false);
-    
     // Handle click on drop area - only trigger file input if not clicking on a button or input
-    dropArea.addEventListener('click', (e) => {
+    function handleDropAreaClick(e) {
         if (e.target === dropArea || e.target.classList.contains('drop-zone-text')) {
             fileInput.click();
         }
-    });
+    }
     
-    // Handle file selection
-    fileInput.addEventListener('change', function(e) {
-        console.log('File input changed');
-        if (this.files && this.files.length > 0) {
-            // Convert FileList to array and add to selectedFiles
-            const newFiles = Array.from(this.files);
-            console.log('New files selected:', newFiles.length);
-            
-            // Add new files to the selectedFiles array
-            selectedFiles = [...selectedFiles, ...newFiles];
-            
-            // Log the updated selection
-            console.log('Total files after selection:', selectedFiles.length);
-            selectedFiles.forEach((file, i) => {
-                console.log(`File ${i + 1}:`, {
-                    name: file.name,
-                    size: formatFileSize(file.size),
-                    type: file.type,
-                    lastModified: new Date(file.lastModified).toISOString()
-                });
-            });
-            
-            updateFileList();
-            
-            // Reset the file input to allow selecting the same file again if needed
-            this.value = '';
-        }
-    });
-    
-    // Handle form submission
-    function handleFormSubmit(e) {
-        e.preventDefault();
-        
-        console.log('=== Form Submission Started ===');
-        if (formSubmitted) {
-            console.warn('Form submission already in progress, ignoring duplicate submission');
-            return false;
-        }
-        
+    // Handle file selection via input
+    function handleFileSelect(e) {
+        console.log('=== Files Selected ===');
+    // Process uploaded files
+    function processUploadedFiles() {
+        console.log('=== Processing Files ===');
         if (selectedFiles.length === 0) {
-            console.error('No files selected');
-            showAlert('Please select at least one image to upload.', 'warning');
-            return false;
+            showAlert('No files to process', 'warning');
+            return;
+        }
+        
+        if (formSubmitted) {
+            console.warn('Processing already in progress, ignoring duplicate request');
+            return;
         }
         
         // Validate all files before submission
@@ -806,6 +819,12 @@
         
         // Return the alert element in case it needs to be managed
         return alertDiv;
+    }
+
+    // Handle form submission
+    function handleFormSubmit(e) {
+        e.preventDefault();
+        processUploadedFiles();
     }
 
     // Initialize the application when the DOM is fully loaded
