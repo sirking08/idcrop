@@ -71,49 +71,60 @@ function processImageWithFaceDetection($sourcePath, $outputDir) {
             throw new \Exception('Face detection script not found at: ' . $scriptPath);
         }
         
-        // Build the command to run the Python script
+        // Build the command to run the Python script with ID extraction
         $command = sprintf(
-            '%s %s %s %s 2>&1',
+            '%s %s %s %s --use-id 2>&1',
             escapeshellarg($pythonPath),
             escapeshellarg($scriptPath),
             escapeshellarg($sourcePath),
-            escapeshellarg($outputPath)
+            escapeshellarg(dirname($outputPath))  // Pass directory instead of full path
         );
+        
+        // Reset output path as the Python script will determine the final filename
+        $outputPath = '';
         
         // Log the command for debugging
         error_log('Executing face detection command: ' . $command);
         
         // Execute the command
         $output = [];
-        $returnVar = 0;
         exec($command, $output, $returnVar);
         
         // Log the output for debugging
         error_log('Face detection output: ' . implode("\n", $output));
         
-        // Check if the output file was created
-        if (!file_exists($outputPath)) {
-            // Try to get the actual output path from the Python script's output
-            foreach ($output as $line) {
-                if (strpos($line, 'saved to:') !== false) {
-                    $parts = explode('saved to:', $line);
-                    if (isset($parts[1])) {
-                        $possiblePath = trim($parts[1]);
-                        if (file_exists($possiblePath)) {
-                            $outputPath = $possiblePath;
-                            break;
-                        }
+        // Get the output path from the Python script's output
+        foreach ($output as $line) {
+            // Check for saved file path
+            if (strpos($line, 'saved to:') !== false) {
+                $parts = explode('saved to:', $line);
+                if (isset($parts[1])) {
+                    $possiblePath = trim($parts[1]);
+                    if (file_exists($possiblePath)) {
+                        $outputPath = $possiblePath;
+                        break;
                     }
                 }
             }
-            
-            // If still no file, throw an error
-            if (!file_exists($outputPath)) {
-                $error = 'Face detection failed. Output file was not created. ';
-                $error .= 'Return code: ' . $returnVar . '. ';
-                $error .= 'Output: ' . implode("\n", $output);
-                throw new \Exception($error);
+            // Check for extracted ID
+            if (strpos($line, 'Extracted ID:') !== false) {
+                $parts = explode('Extracted ID:', $line);
+                if (isset($parts[1])) {
+                    $idNumber = trim($parts[1]);
+                    $ext = pathinfo($sourcePath, PATHINFO_EXTENSION);
+                    $outputPath = rtrim(dirname($outputPath), '/') . '/' . $idNumber . '.' . $ext;
+                    if (file_exists($outputPath)) {
+                        break;
+                    }
+                }
             }
+        }
+        
+        // If still no file, use a fallback filename
+        if (empty($outputPath) || !file_exists($outputPath)) {
+            $outputPath = rtrim(dirname($outputPath), '/') . '/' . uniqid() . '_' . basename($sourcePath);
+            error_log('Could not determine output path from Python script, using fallback: ' . $outputPath);
+        }
         }
         
         // Verify the output file is not empty
