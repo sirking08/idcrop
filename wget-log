@@ -1,0 +1,11 @@
+--2025-10-09 15:08:59--  https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400
+Resolving images.unsplash.com (images.unsplash.com)... 146.75.22.208, 2a04:4e42:75::720
+Connecting to images.unsplash.com (images.unsplash.com)|146.75.22.208|:443... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 32724 (32K) [image/jpeg]
+Saving to: ‘test_face.jpg’
+
+test_face.jpg     0%[       ]       0  --.-KB/s               test_face.jpg   100%[======>]  31.96K  --.-KB/s    in 0.003s  
+
+2025-10-09 15:09:00 (10.3 MB/s) - ‘test_face.jpg’ saved [32724/32724]
+
