@@ -518,105 +518,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
     handleFileUpload();
 }
 
-// Function to detect face using OpenCV if available, or fall back to simpler method
-function detectFace($imagePath) {
-    // Try using OpenCV if available
-    if (extension_loaded('opencv')) {
-        try {
-            // Load the pre-trained face detection model
-            $faceCascade = new \CascadeClassifier();
-            $modelFile = '/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml';
-            
-            if (!file_exists($modelFile)) {
-                throw new Exception('Face detection model not found');
-            }
-            
-            if (!$faceCascade->load($modelFile)) {
-                throw new Exception('Failed to load face detection model');
-            }
-            
-            // Read the image
-            $image = \cv\imread($imagePath);
-            if ($image->empty()) {
-                throw new Exception('Failed to load image with OpenCV');
-            }
-            
-            // Convert to grayscale as face detection works better on grayscale images
-            $gray = new \Mat();
-            \cv\cvtColor($image, $gray, \cv\COLOR_BGR2GRAY);
-            
-            // Detect faces
-            $faces = new \RectVector();
-            $faceCascade->detectMultiScale($gray, $faces);
-            
-            // If we found faces, return the first one
-            if ($faces->size() > 0) {
-                $face = $faces->get(0);
-                return [
-                    'x' => $face->x,
-                    'y' => $face->y,
-                    'width' => $face->width,
-                    'height' => $face->height
-                ];
-            }
-        } catch (Exception $e) {
-            logMessage('OpenCV face detection failed: ' . $e->getMessage(), 'WARNING');
-        }
-    }
+// detectFace function has been moved to includes/image_processor.php
+
+// Handle face detection processing for a single file
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'process_face_detection') {
+    header('Content-Type: application/json');
     
-    // Fallback: Use face detection with PHP's GD
-    // This is a simpler method that looks for skin tones
-    $img = imagecreatefromjpeg($imagePath);
-    $width = imagesx($img);
-    $height = imagesy($img);
-    
-    // Sample points in the image to find skin tones
-    $samplePoints = [
-        ['x' => $width * 0.25, 'y' => $height * 0.25],
-        ['x' => $width * 0.5, 'y' => $height * 0.25],
-        ['x' => $width * 0.75, 'y' => $height * 0.25],
-        ['x' => $width * 0.4, 'y' => $height * 0.4],
-        ['x' => $width * 0.6, 'y' => $height * 0.4],
+    $response = [
+        'success' => false,
+        'message' => '',
+        'processed_path' => ''
     ];
     
-    $skinPoints = [];
-    foreach ($samplePoints as $point) {
-        $rgb = imagecolorat($img, $point['x'], $point['y']);
-        $r = ($rgb >> 16) & 0xFF;
-        $g = ($rgb >> 8) & 0xFF;
-        $b = $rgb & 0xFF;
-        
-        // Simple skin tone detection (adjust these values based on your needs)
-        if ($r > 95 && $g > 40 && $b > 20 && 
-            ($r - $g > 15) && ($r > $g) && ($r > $b)) {
-            $skinPoints[] = $point;
+    try {
+        // Verify session
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
         }
-    }
-    
-    imagedestroy($img);
-    
-    // If we found skin tones, use the average position
-    if (count($skinPoints) > 2) {
-        $avgX = array_sum(array_column($skinPoints, 'x')) / count($skinPoints);
-        $avgY = array_sum(array_column($skinPoints, 'y')) / count($skinPoints);
         
-        // Return a region around the detected face
-        $faceSize = min($width, $height) * 0.4; // 40% of the smaller dimension
-        return [
-            'x' => max(0, $avgX - $faceSize/2),
-            'y' => max(0, $avgY - $faceSize/2),
-            'width' => min($width, $faceSize * 1.5),  // Slightly wider than tall
-            'height' => min($height, $faceSize)
-        ];
+        // Check if file path is provided
+        if (empty($_POST['file_path'])) {
+            throw new Exception('No file path provided');
+        }
+        
+        $filePath = $_POST['file_path'];
+        $tempDir = $uploadDir . '/temp';
+        
+        // Process the image with face detection
+        $result = processImageWithFaceDetection($filePath, $tempDir);
+        
+        if ($result['success']) {
+            $response['success'] = true;
+            $response['processed_path'] = $result['output_path'];
+            $response['message'] = 'Face detection completed successfully';
+        } else {
+            throw new Exception($result['message']);
+        }
+        
+    } catch (Exception $e) {
+        $response['message'] = 'Face detection failed: ' . $e->getMessage();
+        logMessage('Face detection error: ' . $e->getMessage(), 'ERROR');
     }
     
-    // Default: return center of image if no face/skin detected
-    return [
-        'x' => $width * 0.25,
-        'y' => $height * 0.25,
-        'width' => $width * 0.5,
-        'height' => $height * 0.5
-    ];
+    echo json_encode($response);
+    exit;
 }
 
 // Handle processing of uploaded files
@@ -697,18 +642,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         logMessage("Is writable: " . (is_writable(dirname($zipPath)) ? 'Yes' : 'No'));
         logMessage("Free disk space: " . disk_free_space(dirname($zipPath)) . " bytes");
         
-        // Check if the file already exists and is writable
+        // Ensure the output directory exists and is writable
+        $outputDir = dirname($zipPath);
+        if (!is_dir($outputDir)) {
+            if (!mkdir($outputDir, 0777, true)) {
+                throw new Exception('Failed to create output directory: ' . $outputDir);
+            }
+        }
+        
+        // Check if the directory is writable
+        if (!is_writable($outputDir)) {
+            throw new Exception('Output directory is not writable: ' . $outputDir . 
+                              ' (Current permissions: ' . substr(sprintf('%o', fileperms($outputDir)), -4) . ')' .
+                              ' (Owner: ' . posix_getpwuid(fileowner($outputDir))['name'] . ')' .
+                              ' (Group: ' . posix_getgrgid(filegroup($outputDir))['name'] . ')');
+        }
+        
+        // Check if the ZIP file exists and is writable
         if (file_exists($zipPath)) {
-            logMessage("Warning: ZIP file already exists and will be overwritten");
             if (!is_writable($zipPath)) {
-                logMessage("Error: Existing ZIP file is not writable");
+                throw new Exception('ZIP file exists but is not writable: ' . $zipPath . 
+                                  ' (Current permissions: ' . substr(sprintf('%o', fileperms($zipPath)), -4) . ')' .
+                                  ' (Owner: ' . posix_getpwuid(fileowner($zipPath))['name'] . ')' .
+                                  ' (Group: ' . posix_getgrgid(filegroup($zipPath))['name'] . ')');
             } else {
-                logMessage("Existing ZIP file is writable and will be overwritten");
+                // Try to remove the existing file
+                if (!unlink($zipPath)) {
+                    throw new Exception('Failed to remove existing ZIP file: ' . $zipPath);
+                }
             }
         }
         
         // Try to create the ZIP file with error handling
-        $zipOpenResult = $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+        $tempZipPath = tempnam(sys_get_temp_dir(), 'idcrop_zip_');
+        if ($tempZipPath === false) {
+            throw new Exception('Failed to create temporary ZIP file');
+        }
+        
+        // Clean up the temp file as ZipArchive will create its own
+        unlink($tempZipPath);
+        
+        // Try to open the ZIP file with explicit permissions
+        $zipOpenResult = $zip->open($tempZipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
         
         if ($zipOpenResult !== true) {
             $errorMessage = 'Could not create ZIP file at ' . $zipPath . '. Error code: ' . $zipOpenResult;
@@ -765,31 +740,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $totalFiles = count($uploadedFiles);
         $errors = [];
         
-        // Process each uploaded file
+        // Process each uploaded file with face detection
+        $processedFiles = [];
         foreach ($uploadedFiles as $index => $file) {
             try {
                 if (!isset($file['path']) || !file_exists($file['path'])) {
                     throw new Exception('File not found');
                 }
                 
-                logMessage("Processing file {$file['original_name']} (" . ($index + 1) . "/$totalFiles)");
+                logMessage("Processing file with face detection: {$file['original_name']} (" . ($index + 1) . "/$totalFiles)");
                 
-                // Process the file
-                $result = processImage([
-                    'name' => $file['original_name'],
-                    'type' => $file['type'] ?? mime_content_type($file['path']),
-                    'tmp_name' => $file['path'],
-                    'error' => 0,
-                    'size' => $file['size'] ?? filesize($file['path'])
-                ], $uploadDir, $tempDir);
+                // Process the file with face detection
+                $faceDetectionResult = processImageWithFaceDetection($file['path'], $tempDir);
                 
-                if ($result['success'] && file_exists($result['output_path'])) {
-                    $addName = basename($file['original_name']);
-                    if (!$zip->addFile($result['output_path'], $addName)) {
-                        throw new Exception('Failed to add file to ZIP');
+                $fileToAdd = null;
+                
+                if ($faceDetectionResult['success'] && file_exists($faceDetectionResult['output_path'])) {
+                    // Use the face-detected image
+                    $fileToAdd = [
+                        'path' => $faceDetectionResult['output_path'],
+                        'name' => 'cropped_' . basename($file['original_name'])
+                    ];
+                    logMessage("Successfully processed file with face detection: {$file['original_name']}");
+                } else {
+                    // Fallback to original image if face detection fails
+                    logMessage("Face detection failed for {$file['original_name']}, using original image");
+                    $fileToAdd = [
+                        'path' => $file['path'],
+                        'name' => basename($file['original_name'])
+                    ];
+                }
+                
+                // Add the file to the ZIP archive
+                if ($fileToAdd && file_exists($fileToAdd['path'])) {
+                    if (!$zip->addFile($fileToAdd['path'], $fileToAdd['name'])) {
+                        throw new Exception('Failed to add file to ZIP: ' . $fileToAdd['name']);
                     }
                     $processedCount++;
-                    logMessage("Successfully processed: " . $file['original_name']);
+                    logMessage("Added to ZIP: " . $fileToAdd['name']);
                 } else {
                     throw new Exception($result['message'] ?? 'Unknown processing error');
                 }
@@ -797,18 +785,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $errorMsg = 'Failed to process ' . ($file['original_name'] ?? 'unknown file') . ': ' . $e->getMessage();
                 $errors[] = $errorMsg;
                 logMessage($errorMsg, 'ERROR');
+                
+                // Try to add the original file as a fallback
+                try {
+                    if (file_exists($file['path'])) {
+                        $originalName = 'original_' . basename($file['original_name']);
+                        if ($zip->addFile($file['path'], $originalName)) {
+                            $processedCount++;
+                            logMessage("Added original file as fallback: $originalName");
+                        }
+                    }
+                } catch (Exception $fallbackEx) {
+                    logMessage("Failed to add original file as fallback: " . $fallbackEx->getMessage(), 'ERROR');
+                }
             }
         }
         
         // Close the ZIP file with error handling
         if ($zip->close() === false) {
             $errorMessage = 'Failed to finalize ZIP file';
-            if (file_exists($zipPath)) {
-                $errorMessage .= '. ZIP file size: ' . filesize($zipPath) . ' bytes';
+            if (file_exists($tempZipPath)) {
+                $errorMessage .= '. Temporary ZIP file size: ' . filesize($tempZipPath) . ' bytes';
+                unlink($tempZipPath); // Clean up
             } else {
-                $errorMessage .= '. ZIP file was not created';
+                $errorMessage .= '. Temporary ZIP file was not created';
             }
             throw new Exception($errorMessage);
+        }
+        
+        // Verify the temporary ZIP file exists and has content before moving it
+        if (!file_exists($tempZipPath)) {
+            throw new Exception('Temporary ZIP file was not created at: ' . $tempZipPath);
+        }
+        
+        $tempFileSize = filesize($tempZipPath);
+        if ($tempFileSize === 0) {
+            unlink($tempZipPath);
+            throw new Exception('Temporary ZIP file is empty');
+        }
+        
+        // Ensure the target directory exists
+        $zipDir = dirname($zipPath);
+        if (!is_dir($zipDir) && !mkdir($zipDir, 0777, true)) {
+            throw new Exception('Failed to create ZIP directory: ' . $zipDir);
+        }
+        
+        // Remove existing ZIP file if it exists
+        if (file_exists($zipPath) && !unlink($zipPath)) {
+            throw new Exception('Failed to remove existing ZIP file: ' . $zipPath);
+        }
+        
+        // Move the file with error checking
+        if (!rename($tempZipPath, $zipPath)) {
+            $error = error_get_last();
+            $errorMsg = 'Failed to move temporary ZIP file: ' . ($error['message'] ?? 'Unknown error');
+            if (file_exists($tempZipPath)) {
+                $errorMsg .= ' (Temp file size: ' . $tempFileSize . ' bytes)';
+                unlink($tempZipPath);
+            }
+            throw new Exception($errorMsg);
         }
         
         // Verify the ZIP file was created and is valid

@@ -21,3 +21,11 @@ __pycache__/
 # System Files
 .DS_Store
 Thumbs.db
+
+# Upload and Output directories - ignore contents but keep directories and .htaccess files
+output/*
+!output/.gitkeep
+!output/.htaccess
+uploads/*
+!uploads/.gitkeep
+!uploads/.htaccess

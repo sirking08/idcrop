@@ -6,47 +6,7 @@
  * and cropping operations.
  */
 
-namespace IDPhotoCropper;
-
-use function error_log;
-use function file_exists;
-use function filesize;
-use function getimagesize;
-use function imagecolorallocate;
-use function imagecolorallocatealpha;
-use function imagecopyresampled;
-use function imagecreatefromjpeg;
-use function imagecreatefrompng;
-use function imagecreatetruecolor;
-use function imagedestroy;
-use function imagefill;
-use function imagejpeg;
-use function imagepng;
-use function imagesavealpha;
-use function imagesx;
-use function imagesy;
-use function imagerotate;
-use function imagescale;
-use function imagealphablending;
-use function is_dir;
-use function is_resource;
-use function is_writable;
-use function mkdir;
-use function pathinfo;
-use function rtrim;
-use function sprintf;
-use function strtolower;
-use function tempnam;
-use function unlink;
-use function uniqid;
-use function is_array;
-use function array_sum;
-use function array_column;
-use function count;
-use function max;
-use function min;
-use function extension_loaded;
-use function chmod;
+// No need to import global functions in PHP
 
 // If we're not in a namespace, we need to use the global Exception class
 if (!class_exists('Exception') && class_exists('\Exception')) {
@@ -66,186 +26,223 @@ if (!class_exists('RuntimeException') && class_exists('\RuntimeException')) {
  * @param string $outputDir Directory where processed files should be saved
  * @return array Result array with success status and output path
  */
+/**
+ * Process an image with face detection and cropping
+ * 
+ * @param string $sourcePath Path to the source image file
+ * @param string $outputDir Directory where processed files should be saved
+ * @return array Result array with success status and output path
+ */
+function processImageWithFaceDetection($sourcePath, $outputDir) {
+    $result = [
+        'success' => false,
+        'message' => '',
+        'output_path' => ''
+    ];
+    
+    if (!file_exists($sourcePath)) {
+        $result['message'] = 'Source file does not exist: ' . $sourcePath;
+        error_log($result['message']);
+        return $result;
+    }
+    
+    // Generate output filename with a unique ID to avoid conflicts
+    $filename = 'cropped_' . uniqid() . '_' . basename($sourcePath);
+    $outputPath = rtrim($outputDir, '/') . '/' . $filename;
+    
+    try {
+        // Ensure output directory exists and is writable
+        if (!file_exists($outputDir)) {
+            if (!mkdir($outputDir, 0777, true)) {
+                throw new \Exception('Failed to create output directory: ' . $outputDir);
+            }
+        } elseif (!is_writable($outputDir)) {
+            throw new \Exception('Output directory is not writable: ' . $outputDir);
+        }
+        
+        // Get the Python path and verify the script exists
+        $pythonPath = trim(shell_exec('which python3') ?: '');
+        if (empty($pythonPath)) {
+            throw new \Exception('Python 3 is not installed or not in PATH');
+        }
+        
+        $scriptPath = __DIR__ . '/../detect_face.py';
+        if (!file_exists($scriptPath)) {
+            throw new \Exception('Face detection script not found at: ' . $scriptPath);
+        }
+        
+        // Build the command to run the Python script
+        $command = sprintf(
+            '%s %s %s %s 2>&1',
+            escapeshellarg($pythonPath),
+            escapeshellarg($scriptPath),
+            escapeshellarg($sourcePath),
+            escapeshellarg($outputPath)
+        );
+        
+        // Log the command for debugging
+        error_log('Executing face detection command: ' . $command);
+        
+        // Execute the command
+        $output = [];
+        $returnVar = 0;
+        exec($command, $output, $returnVar);
+        
+        // Log the output for debugging
+        error_log('Face detection output: ' . implode("\n", $output));
+        
+        // Check if the output file was created
+        if (!file_exists($outputPath)) {
+            // Try to get the actual output path from the Python script's output
+            foreach ($output as $line) {
+                if (strpos($line, 'saved to:') !== false) {
+                    $parts = explode('saved to:', $line);
+                    if (isset($parts[1])) {
+                        $possiblePath = trim($parts[1]);
+                        if (file_exists($possiblePath)) {
+                            $outputPath = $possiblePath;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // If still no file, throw an error
+            if (!file_exists($outputPath)) {
+                $error = 'Face detection failed. Output file was not created. ';
+                $error .= 'Return code: ' . $returnVar . '. ';
+                $error .= 'Output: ' . implode("\n", $output);
+                throw new \Exception($error);
+            }
+        }
+        
+        // Verify the output file is not empty
+        if (filesize($outputPath) === 0) {
+            @unlink($outputPath);
+            throw new \Exception('Face detection failed: Output file is empty');
+        }
+        
+        // Set the result
+        $result['success'] = true;
+        $result['output_path'] = $outputPath;
+        $result['message'] = 'Image processed successfully with face detection';
+        
+        return $result;
+        
+    } catch (\Exception $e) {
+        // Clean up any created files
+        if (isset($outputPath) && file_exists($outputPath)) {
+            @unlink($outputPath);
+        }
+        
+        $result['message'] = $e->getMessage();
+        error_log('Face detection processing error: ' . $e->getMessage());
+        
+        // Fallback to the original image if face detection fails
+        if (file_exists($sourcePath)) {
+            $result['output_path'] = $sourcePath;
+            $result['message'] = 'Using original image (face detection failed: ' . $e->getMessage() . ')';
+            error_log('Falling back to original image: ' . $sourcePath);
+        }
+        
+        return $result;
+    }
+}
+
+/**
+ * Process an uploaded image with face detection and cropping
+ * 
+ * @param array $file The uploaded file array (similar to $_FILES)
+ * @param string $uploadDir Directory where uploaded files are stored
+ * @param string $outputDir Directory where processed files should be saved
+ * @return array Result array with success status and output path
+ */
 function processImage($file, $uploadDir, $outputDir) {
     $result = [
         'success' => false,
         'message' => '',
         'output_path' => '',
-        'original_path' => $file['tmp_name']
+        'original_path' => ''
     ];
     
-    // Initialize image resources
-    $image = null;
-    $cropped = null;
-    
     try {
-        // Ensure output directory exists and is writable
-        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true) && !is_dir($outputDir)) {
-            throw new \RuntimeException(sprintf('Output directory "%s" was not created', $outputDir));
+        // Create directories if they don't exist
+        if (!file_exists($uploadDir)) {
+            if (!mkdir($uploadDir, 0777, true)) {
+                throw new \Exception('Failed to create upload directory');
+            }
+        }
+        if (!file_exists($outputDir)) {
+            if (!mkdir($outputDir, 0777, true)) {
+                throw new \Exception('Failed to create output directory');
+            }
         }
         
-        if (!is_writable($outputDir)) {
-            throw new \RuntimeException(sprintf('Output directory "%s" is not writable', $outputDir));
+        // Generate filenames
+        $filename = uniqid('processed_') . '_' . basename($file['name']);
+        $uploadPath = rtrim($uploadDir, '/') . '/' . $filename;
+        $outputPath = rtrim($outputDir, '/') . '/cropped_' . $filename;
+        $result['original_path'] = $uploadPath;
+        
+        // Move uploaded file
+        if (!move_uploaded_file($file['tmp_name'], $uploadPath)) {
+            throw new \Exception('Failed to save uploaded file');
         }
         
-        // Generate output filename with original extension
-        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        $filename = uniqid('processed_', true) . '.' . $ext;
-        $outputPath = rtrim($outputDir, '/') . '/' . $filename;
-        
-        // Check if the uploaded file exists
-        if (!file_exists($file['tmp_name'])) {
-            throw new \Exception('Temporary file not found');
+        // Execute the Python script
+        $pythonPath = trim(shell_exec('which python3'));
+        if (empty($pythonPath)) {
+            throw new \Exception('Python 3 is not installed or not in PATH');
         }
         
-        // Get image info and create image resource
-        $imageInfo = getimagesize($file['tmp_name']);
-        if (!$imageInfo) {
-            throw new \Exception('Invalid image file');
+        $scriptPath = __DIR__ . '/../detect_face.py';
+        if (!file_exists($scriptPath)) {
+            throw new \Exception('Face detection script not found');
         }
         
-        $mime = $imageInfo['mime'];
-        
-        // Create a temporary file for face detection
-        $tempImagePath = tempnam(sys_get_temp_dir(), 'face_detect_') . '.' . $ext;
-        if (!copy($file['tmp_name'], $tempImagePath)) {
-            throw new \Exception('Failed to create temporary image for face detection');
-        }
-        
-        // Detect face in the image
-        $face = detectFace($tempImagePath);
-        
-        // Clean up temporary file
-        @unlink($tempImagePath);
-        
-        // Load the original image for processing
-        switch ($mime) {
-            case 'image/jpeg':
-            case 'image/jpg':
-                $image = @imagecreatefromjpeg($file['tmp_name']);
-                break;
-            case 'image/png':
-                $image = @imagecreatefrompng($file['tmp_name']);
-                break;
-            default:
-                throw new \Exception('Unsupported image type: ' . $mime);
-        }
-        
-        if (!$image) {
-            throw new \Exception('Failed to load image. The file might be corrupted or not a valid image.');
-        }
-        
-        // Get image dimensions
-        $width = imagesx($image);
-        $height = imagesy($image);
-        
-        // Ensure face coordinates are within image bounds
-        $faceX = max(0, min($width - 10, $face['x']));
-        $faceY = max(0, min($height - 10, $face['y']));
-        $faceWidth = min($width - $faceX, $face['width']);
-        $faceHeight = min($height - $faceY, $face['height']);
-        
-        // Add some padding around the detected face (20% of face size)
-        $paddingX = $faceWidth * 0.2;
-        $paddingY = $faceHeight * 0.2;
-        
-        $cropX = max(0, $faceX - $paddingX);
-        $cropY = max(0, $faceY - $paddingY);
-        $cropWidth = min($width - $cropX, $faceWidth + ($paddingX * 2));
-        $cropHeight = min($height - $cropY, $faceHeight + ($paddingY * 2));
-        
-        // Ensure minimum size
-        $minSize = min($width, $height) * 0.3; // At least 30% of the smaller dimension
-        if ($cropWidth < $minSize) {
-            $cropX = max(0, $cropX - (($minSize - $cropWidth) / 2));
-            $cropWidth = $minSize;
-        }
-        if ($cropHeight < $minSize) {
-            $cropY = max(0, $cropY - (($minSize - $cropHeight) / 2));
-            $cropHeight = $minSize;
-        }
-        
-        // Ensure we don't go out of bounds
-        $cropX = max(0, (int)$cropX);
-        $cropY = max(0, (int)$cropY);
-        $cropWidth = min($width - $cropX, (int)$cropWidth);
-        $cropHeight = min($height - $cropY, (int)$cropHeight);
-        
-        // Create a new true color image for the cropped face
-        $cropped = imagecreatetruecolor($cropWidth, $cropHeight);
-        
-        // Preserve transparency for PNG
-        if ($mime === 'image/png') {
-            imagealphablending($cropped, false);
-            imagesavealpha($cropped, true);
-            $transparent = imagecolorallocatealpha($cropped, 0, 0, 0, 127);
-            imagefill($cropped, 0, 0, $transparent);
-        } else {
-            // For JPEG, use white background
-            $white = imagecolorallocate($cropped, 255, 255, 255);
-            imagefill($cropped, 0, 0, $white);
-        }
-        
-        // Copy the face region from the original image to the new image
-        imagecopyresampled(
-            $cropped, $image,
-            0, 0, $cropX, $cropY,
-            $cropWidth, $cropHeight, $cropWidth, $cropHeight
+        $command = sprintf(
+            '%s %s %s %s 2>&1',
+            escapeshellarg($pythonPath),
+            escapeshellarg($scriptPath),
+            escapeshellarg($uploadPath),
+            escapeshellarg($outputPath)
         );
         
-        // Save the cropped image
-        $success = false;
-        switch ($mime) {
-            case 'image/jpeg':
-            case 'image/jpg':
-                $success = imagejpeg($cropped, $outputPath, 90);
-                break;
-            case 'image/png':
-                $success = imagepng($cropped, $outputPath, 9);
-                break;
-        }
+        $output = [];
+        $returnVar = 0;
+        exec($command, $output, $returnVar);
         
-        if (!$success) {
-            throw new \Exception('Failed to save processed image');
-        }
+        // Log the command and output for debugging
+        error_log("Face detection command: " . $command);
+        error_log("Return code: " . $returnVar);
+        error_log("Output: " . implode("\n", $output));
         
-        // Free up memory
-        imagedestroy($image);
-        imagedestroy($cropped);
-        
-        // Set proper permissions
-        if (!chmod($outputPath, 0664)) {
-            error_log('Warning: Failed to set permissions for ' . $outputPath, 3, '/tmp/idcrop_errors.log');
+        if ($returnVar !== 0 || !file_exists($outputPath)) {
+            $error = 'Face detection failed. ';
+            $error .= 'Return code: ' . $returnVar . '. ';
+            $error .= 'Output: ' . implode("\n", $output);
+            throw new \Exception($error);
         }
         
         $result['success'] = true;
-        $result['message'] = 'Image processed and cropped to face successfully';
         $result['output_path'] = $outputPath;
+        $result['message'] = 'Image processed successfully';
+        
+        return $result;
         
     } catch (\Exception $e) {
-        $result['message'] = $e->getMessage();
-        error_log('Image processing error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine(), 3, '/tmp/idcrop_errors.log');
-        
-        // Clean up any created resources
-        if (isset($image) && is_resource($image)) {
-            imagedestroy($image);
+        // Clean up any created files
+        if (isset($uploadPath) && file_exists($uploadPath)) {
+            @unlink($uploadPath);
         }
-        if (isset($cropped) && is_resource($cropped)) {
-            imagedestroy($cropped);
-        }
-        
-        // If we failed but have a partial output file, clean it up
         if (isset($outputPath) && file_exists($outputPath)) {
             @unlink($outputPath);
         }
         
-        // If we have a temporary file, clean it up
-        if (isset($tempImagePath) && file_exists($tempImagePath)) {
-            @unlink($tempImagePath);
-        }
+        $result['message'] = $e->getMessage();
+        error_log('Image processing error: ' . $e->getMessage());
+        return $result;
     }
-    
-    return $result;
 }
 
 /**

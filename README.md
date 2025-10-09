@@ -4,19 +4,22 @@ A PHP web application that automatically detects faces in ID photos, crops them 
 
 ## ✨ Features
 
-- **Face Detection**: Automatically detects and centers on faces in ID photos
-- **Smart Cropping**: Intelligently crops to focus on the main subject
+- **Face Detection**: Automatically detects and centers on faces in ID photos using OpenCV
+- **Smart Cropping**: Intelligently crops to focus on the main subject with proper padding
+- **Fallback Mechanism**: Gracefully falls back to original image if face detection fails
 - **Multiple Formats**: Supports JPG, PNG, and other common image formats
-- **Batch Processing**: Process multiple images in one go
+- **Batch Processing**: Process multiple images in one go with ZIP download
 - **Responsive Design**: Works on both desktop and mobile devices
 - **Drag & Drop**: Simple and intuitive file upload interface
 - **Real-time Progress**: Track upload and processing status
 - **Secure**: File type validation and secure processing
+- **Detailed Logging**: Comprehensive error logging for troubleshooting
 
 ## 🚀 System Requirements
 
 - **Web Server**: Apache 2.4+ or Nginx
-- **PHP**: 8.0+ (recommended) or PHP 7.4+
+- **PHP**: 8.1+ (recommended) or PHP 8.0+
+- **Python**: 3.6+ (required for face detection)
 - **PHP Extensions**:
   - ✅ GD (for image processing)
   - ✅ ZIP (for creating archives)
@@ -24,15 +27,34 @@ A PHP web application that automatically detects faces in ID photos, crops them 
   - ✅ JSON (for API responses)
   - ✅ OpenSSL (for secure connections)
   - ✅ MBString (for string handling)
+  - ✅ EXIF (for image orientation handling)
+- **Recommended Server Specs**:
+  - Minimum: 1GB RAM, 1 CPU core
+  - Recommended: 2GB+ RAM, 2+ CPU cores for better performance with multiple concurrent users
 
-### For Enhanced Face Detection (Optional):
-- OpenCV with PHP bindings (for advanced face detection)
+### For Face Detection:
+- **OpenCV with Python** (Required for face detection):
   ```bash
-  # Install OpenCV for Python (used as fallback)
-  sudo apt-get install python3-opencv
+  # Install OpenCV for Python
+  sudo apt-get update
+  sudo apt-get install python3-opencv python3-pip
   
-  # For PHP-OpenCV (if available for your system):
-  # pecl install opencv
+  # Install required Python packages
+  sudo pip3 install Pillow
+  
+  # Verify installation
+  python3 -c "import cv2; print(f'OpenCV version: {cv2.__version__}')"
+  ```
+
+- **PHP Requirements**:
+  ```bash
+  # Required PHP extensions
+  sudo apt-get install php-gd php-zip php-mbstring
+  
+  # Enable PHP error logging (if not already enabled)
+  sudo sed -i 's/^;error_log = .*/error_log = \/var\/log\/php_errors.log/' /etc/php/8.1/apache2/php.ini
+  sudo touch /var/log/php_errors.log
+  sudo chown www-data:www-data /var/log/php_errors.log
   ```
 
 ### For OCR (Optional):
@@ -141,6 +163,76 @@ location /idcrop {
 
 6. **Verify installation**:
    Create a test PHP file with `<?php phpinfo(); ?>` and check that all required extensions are loaded.
+
+## 🐍 Python Virtual Environment Setup
+
+For better dependency management, it's recommended to use a Python virtual environment:
+
+```bash
+# Navigate to your project directory
+cd /var/www/html/idcrop
+
+# Install Python virtualenv if not already installed
+sudo apt-get install python3-venv
+
+# Create a new virtual environment
+python3 -m venv venv
+
+# Activate the virtual environment
+source venv/bin/activate
+
+# Install required Python packages
+pip install opencv-python-headless Pillow
+
+# Verify the installations
+python -c "import cv2; print(f'OpenCV version: {cv2.__version__}')"
+python -c "from PIL import Image; print(f'Pillow version: {Image.__version__}'); print('Pillow installation verified!')"
+
+# Optional: Test basic image processing
+python -c "
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+
+# Create a test image
+img = Image.new('RGB', (200, 100), color='white')
+draw = ImageDraw.Draw(img)
+draw.text((10, 10), 'Pillow Works!', fill='black')
+
+# Save test image
+test_path = 'pillow_test.png'
+img.save(test_path)
+print(f'Test image saved to: {test_path}')
+
+# Test OpenCV integration
+img_cv = cv2.imread(test_path)
+if img_cv is not None:
+    print('OpenCV can read Pillow-created images')
+    print(f'Image dimensions: {img_cv.shape[1]}x{img_cv.shape[0]}')
+else:
+    print('Warning: OpenCV could not read the test image')
+"
+
+# To deactivate the virtual environment when done
+deactivate
+```
+
+### 🚀 Auto-activation for Web Server
+
+To ensure the virtual environment is activated when the web server runs the Python script, add this to the top of your `detect_face.py`:
+
+```python
+#!/usr/bin/env python3
+
+# Activate virtual environment
+activate_this = '/var/www/html/idcrop/venv/bin/activate_this.py'
+with open(activate_this) as f:
+    exec(f.read(), {'__file__': activate_this})
+
+# Rest of your imports and code
+import cv2
+import sys
+# ...
+```
 
 ## ⚙️ Configuration
 
@@ -401,6 +493,13 @@ location /idcrop/upload.php {
 ```
 
 ## 📜 Changelog
+
+### [1.3.0] - 2025-10-09
+- **Fixed**: Face detection integration with main application
+- **Improved**: Enhanced error handling and logging for face detection
+- **Added**: Graceful fallback to original images when face detection fails
+- **Optimized**: Improved memory management for batch processing
+- **Updated**: Comprehensive documentation and system requirements
 
 ### [1.2.0] - 2025-10-08
 - **Added**: Advanced face detection with OpenCV fallback
