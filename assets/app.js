@@ -255,10 +255,29 @@ const IDPhotoCropper = (function() {
             progressContainer.style.display = 'none';
             progressContainer.style.marginTop = '8px';
             
+            // Buttons container
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.className = 'd-flex align-items-center';
+            buttonsContainer.style.gap = '0.5rem';
+            
+            // Preview button
+            const previewBtn = document.createElement('button');
+            previewBtn.className = 'btn btn-sm btn-outline-primary';
+            previewBtn.innerHTML = '<i class="bi bi-eye"></i>';
+            previewBtn.title = 'Preview';
+            previewBtn.style.flexShrink = '0';
+            previewBtn.onclick = (e) => {
+                e.stopPropagation();
+                const reader = new FileReader();
+                reader.onload = (e) => showImagePreview(e.target.result, file.name);
+                reader.readAsDataURL(file);
+            };
+            
             // Remove button
             const removeBtn = document.createElement('button');
-            removeBtn.className = 'btn btn-sm btn-outline-danger ms-2';
+            removeBtn.className = 'btn btn-sm btn-outline-danger';
             removeBtn.innerHTML = '&times;';
+            removeBtn.title = 'Remove';
             removeBtn.style.flexShrink = '0';
             removeBtn.onclick = (e) => {
                 e.stopPropagation();
@@ -270,8 +289,12 @@ const IDPhotoCropper = (function() {
             fileInfo.appendChild(fileSize);
             fileInfo.appendChild(progressContainer);
             
+            // Add buttons to container
+            buttonsContainer.appendChild(previewBtn);
+            buttonsContainer.appendChild(removeBtn);
+            
             item.appendChild(fileInfo);
-            item.appendChild(removeBtn);
+            item.appendChild(buttonsContainer);
             elements.fileList.appendChild(item);
         });
 
@@ -752,24 +775,19 @@ const IDPhotoCropper = (function() {
                             <p class="card-text small text-truncate mb-1" title="${file.name}">${file.name}</p>
                             <p class="card-text small text-muted mb-0">${(file.size / 1024).toFixed(2)} KB</p>
                         </div>
-                        <div class="card-footer bg-transparent border-top-0 pt-0">
-                            <button class="btn btn-sm btn-outline-primary w-100 preview-btn" data-index="${index}">
-                                <i class="fas fa-eye me-1"></i> Preview
-                            </button>
-                        </div>
                     </div>
                 `;
                 
                 previewImages.appendChild(previewItem);
                 
-                // Add click handler for the preview button
-                const previewBtn = previewItem.querySelector('.preview-btn');
-                if (previewBtn) {
-                    previewBtn.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        showImagePreview(e.target.closest('.card').querySelector('img').src, file.name);
-                    });
-                }
+                // Make the entire card clickable for preview
+                previewItem.querySelector('.card').style.cursor = 'pointer';
+                previewItem.querySelector('.card').addEventListener('click', (e) => {
+                    // Don't trigger if clicking on a button or link
+                    if (!e.target.closest('button, a')) {
+                        showImagePreview(e.currentTarget.querySelector('img').src, file.name);
+                    }
+                });
             };
             
             reader.readAsDataURL(file);

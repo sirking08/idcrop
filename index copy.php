@@ -5,12 +5,6 @@
  * This script handles file uploads, image processing, and serves the web interface.
  */
 
-// Include required files
-require_once __DIR__ . '/includes/image_processor.php';
-
-// Import the processImage function
-use function IDPhotoCropper\processImage;
-
 // Set error reporting and display settings
 ini_set('display_errors', 0); // Don't show errors to users in production
 error_reporting(E_ALL);
@@ -619,6 +613,189 @@ function detectFace($imagePath) {
     ];
 }
 
+// Process an uploaded image with face detection and cropping
+function processImage($file, $uploadDir, $outputDir) {
+    $result = [
+        'success' => false,
+        'message' => '',
+        'output_path' => '',
+        'original_path' => $file['tmp_name']
+    ];
+    
+    // Initialize image resources
+    $image = null;
+    $cropped = null;
+    
+    try {
+        // Ensure output directory exists and is writable
+        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true) && !is_dir($outputDir)) {
+            throw new RuntimeException(sprintf('Output directory "%s" was not created', $outputDir));
+        }
+        
+        if (!is_writable($outputDir)) {
+            throw new RuntimeException(sprintf('Output directory "%s" is not writable', $outputDir));
+        }
+        
+        // Generate output filename with original extension
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        $filename = uniqid('processed_', true) . '.' . $ext;
+        $outputPath = rtrim($outputDir, '/') . '/' . $filename;
+        
+        // Check if the uploaded file exists
+        if (!file_exists($file['tmp_name'])) {
+            throw new Exception('Temporary file not found');
+        }
+        
+        // Get image info and create image resource
+        $imageInfo = getimagesize($file['tmp_name']);
+        if (!$imageInfo) {
+            throw new Exception('Invalid image file');
+        }
+        
+        $mime = $imageInfo['mime'];
+        
+        // Create a temporary file for face detection
+        $tempImagePath = tempnam(sys_get_temp_dir(), 'face_detect_') . '.' . $ext;
+        if (!copy($file['tmp_name'], $tempImagePath)) {
+            throw new Exception('Failed to create temporary image for face detection');
+        }
+        
+        // Detect face in the image
+        $face = detectFace($tempImagePath);
+        
+        // Clean up temporary file
+        @unlink($tempImagePath);
+        
+        // Load the original image for processing
+        switch ($mime) {
+            case 'image/jpeg':
+            case 'image/jpg':
+                $image = @imagecreatefromjpeg($file['tmp_name']);
+                break;
+            case 'image/png':
+                $image = @imagecreatefrompng($file['tmp_name']);
+                break;
+            default:
+                throw new Exception('Unsupported image type: ' . $mime);
+        }
+        
+        if (!$image) {
+            throw new Exception('Failed to load image. The file might be corrupted or not a valid image.');
+        }
+        
+        // Get image dimensions
+        $width = imagesx($image);
+        $height = imagesy($image);
+        
+        // Ensure face coordinates are within image bounds
+        $faceX = max(0, min($width - 10, $face['x']));
+        $faceY = max(0, min($height - 10, $face['y']));
+        $faceWidth = min($width - $faceX, $face['width']);
+        $faceHeight = min($height - $faceY, $face['height']);
+        
+        // Add some padding around the detected face (20% of face size)
+        $paddingX = $faceWidth * 0.2;
+        $paddingY = $faceHeight * 0.2;
+        
+        $cropX = max(0, $faceX - $paddingX);
+        $cropY = max(0, $faceY - $paddingY);
+        $cropWidth = min($width - $cropX, $faceWidth + ($paddingX * 2));
+        $cropHeight = min($height - $cropY, $faceHeight + ($paddingY * 2));
+        
+        // Ensure minimum size
+        $minSize = min($width, $height) * 0.3; // At least 30% of the smaller dimension
+        if ($cropWidth < $minSize) {
+            $cropX = max(0, $cropX - (($minSize - $cropWidth) / 2));
+            $cropWidth = $minSize;
+        }
+        if ($cropHeight < $minSize) {
+            $cropY = max(0, $cropY - (($minSize - $cropHeight) / 2));
+            $cropHeight = $minSize;
+        }
+        
+        // Ensure we don't go out of bounds
+        $cropX = max(0, (int)$cropX);
+        $cropY = max(0, (int)$cropY);
+        $cropWidth = min($width - $cropX, (int)$cropWidth);
+        $cropHeight = min($height - $cropY, (int)$cropHeight);
+        
+        // Create a new true color image for the cropped face
+        $cropped = imagecreatetruecolor($cropWidth, $cropHeight);
+        
+        // Preserve transparency for PNG
+        if ($mime === 'image/png') {
+            imagealphablending($cropped, false);
+            imagesavealpha($cropped, true);
+            $transparent = imagecolorallocatealpha($cropped, 0, 0, 0, 127);
+            imagefill($cropped, 0, 0, $transparent);
+        } else {
+            // For JPEG, use white background
+            $white = imagecolorallocate($cropped, 255, 255, 255);
+            imagefill($cropped, 0, 0, $white);
+        }
+        
+        // Copy the face region from the original image to the new image
+        imagecopyresampled(
+            $cropped, $image,
+            0, 0, $cropX, $cropY,
+            $cropWidth, $cropHeight, $cropWidth, $cropHeight
+        );
+        
+        // Save the cropped image
+        $success = false;
+        switch ($mime) {
+            case 'image/jpeg':
+            case 'image/jpg':
+                $success = imagejpeg($cropped, $outputPath, 90);
+                break;
+            case 'image/png':
+                $success = imagepng($cropped, $outputPath, 9);
+                break;
+        }
+        
+        if (!$success) {
+            throw new Exception('Failed to save processed image');
+        }
+        
+        // Free up memory
+        imagedestroy($image);
+        imagedestroy($cropped);
+        
+        // Set proper permissions
+        if (!chmod($outputPath, 0664)) {
+            logMessage('Warning: Failed to set permissions for ' . $outputPath, 'WARNING');
+        }
+        
+        $result['success'] = true;
+        $result['message'] = 'Image processed and cropped to face successfully';
+        $result['output_path'] = $outputPath;
+        
+    } catch (Exception $e) {
+        $result['message'] = $e->getMessage();
+        logMessage('Image processing error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine(), 'ERROR');
+        
+        // Clean up any created resources
+        if (isset($image) && is_resource($image)) {
+            imagedestroy($image);
+        }
+        if (isset($cropped) && is_resource($cropped)) {
+            imagedestroy($cropped);
+        }
+        
+        // If we failed but have a partial output file, clean it up
+        if (isset($outputPath) && file_exists($outputPath)) {
+            @unlink($outputPath);
+        }
+        
+        // If we have a temporary file, clean it up
+        if (isset($tempImagePath) && file_exists($tempImagePath)) {
+            @unlink($tempImagePath);
+        }
+    }
+    
+    return $result;
+}
+
 // Handle processing of uploaded files
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'process_uploaded_files') {
     header('Content-Type: application/json');
@@ -649,116 +826,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         
         logMessage("Starting processing of " . count($uploadedFiles) . " files to $zipPath");
         
-        // Ensure the output directory exists and is writable with detailed error reporting
-        if (!is_dir($outputDir)) {
-            logMessage("Output directory does not exist, attempting to create: $outputDir");
-            if (!mkdir($outputDir, 0777, true)) {
-                $error = error_get_last();
-                throw new RuntimeException(sprintf('Output directory "%s" was not created: %s', $outputDir, $error['message'] ?? 'Unknown error'));
-            }
-            logMessage("Created output directory: $outputDir");
-        } else {
-            logMessage("Output directory exists: $outputDir");
+        // Ensure the output directory exists and is writable
+        if (!is_dir($outputDir) && !mkdir($outputDir, 0777, true) && !is_dir($outputDir)) {
+            throw new RuntimeException(sprintf('Output directory "%s" was not created', $outputDir));
         }
         
-        // Verify directory permissions
         if (!is_writable($outputDir)) {
-            $perms = substr(sprintf('%o', fileperms($outputDir)), -4);
-            $owner = posix_getpwuid(fileowner($outputDir))['name'];
-            $group = posix_getgrgid(filegroup($outputDir))['name'];
-            throw new RuntimeException(sprintf(
-                'Output directory "%s" is not writable. Permissions: %s, Owner: %s, Group: %s',
-                $outputDir,
-                $perms,
-                $owner,
-                $group
-            ));
+            throw new RuntimeException(sprintf('Output directory "%s" is not writable', $outputDir));
         }
-        
-        logMessage("Output directory is writable: $outputDir");
         
         // Create a temporary directory for processing
-        $tempDir = rtrim($outputDir, '/') . '/temp_' . uniqid('', true);
-        logMessage("Creating temporary directory: $tempDir");
-        
+        $tempDir = rtrim($outputDir, '/') . '/temp_' . uniqid();
         if (!mkdir($tempDir, 0777, true)) {
-            $error = error_get_last();
-            throw new RuntimeException(sprintf('Failed to create temporary directory "%s": %s', $tempDir, $error['message'] ?? 'Unknown error'));
+            throw new RuntimeException('Failed to create temporary directory for processing');
         }
         
-        // Initialize ZIP archive with enhanced error handling
         $zip = new ZipArchive();
-        
-        // Log the ZIP creation attempt with detailed information
-        logMessage("=== ZIP Creation Debug ===");
-        logMessage("Attempting to create ZIP file at: $zipPath");
-        logMessage("Current working directory: " . getcwd());
-        logMessage("Directory exists: " . (is_dir(dirname($zipPath)) ? 'Yes' : 'No'));
-        logMessage("Is writable: " . (is_writable(dirname($zipPath)) ? 'Yes' : 'No'));
-        logMessage("Free disk space: " . disk_free_space(dirname($zipPath)) . " bytes");
-        
-        // Check if the file already exists and is writable
-        if (file_exists($zipPath)) {
-            logMessage("Warning: ZIP file already exists and will be overwritten");
-            if (!is_writable($zipPath)) {
-                logMessage("Error: Existing ZIP file is not writable");
-            } else {
-                logMessage("Existing ZIP file is writable and will be overwritten");
-            }
-        }
-        
-        // Try to create the ZIP file with error handling
-        $zipOpenResult = $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-        
-        if ($zipOpenResult !== true) {
-            $errorMessage = 'Could not create ZIP file at ' . $zipPath . '. Error code: ' . $zipOpenResult;
-            $errorMessage .= ' (Free space: ' . disk_free_space(dirname($zipPath)) . ' bytes)';
-            
-            // Get ZIP error message
-            $zipErrors = [
-                ZipArchive::ER_EXISTS => 'File already exists',
-                ZipArchive::ER_INCONS => 'ZIP archive inconsistent',
-                ZipArchive::ER_INVAL => 'Invalid argument',
-                ZipArchive::ER_MEMORY => 'Malloc failure',
-                ZipArchive::ER_NOENT => 'No such file',
-                ZipArchive::ER_NOZIP => 'Not a zip archive',
-                ZipArchive::ER_OPEN => 'Cannot open file',
-                ZipArchive::ER_READ => 'Read error',
-                ZipArchive::ER_SEEK => 'Seek error',
-                ZipArchive::ER_WRITE => 'Write error',
-                ZipArchive::ER_CRC => 'CRC error',
-                ZipArchive::ER_ZIPCLOSED => 'Containing zip archive was closed',
-                ZipArchive::ER_NOARCH => 'Not a zip archive',
-                ZipArchive::ER_RENAME => 'Rename temporary file failed',
-                ZipArchive::ER_TMPOPEN => 'Failure to create temporary file',
-                ZipArchive::ER_ZLIB => 'Zlib error',
-                ZipArchive::ER_CHANGED => 'Entry has been changed',
-                ZipArchive::ER_COMPNOTSUPP => 'Compression method not supported',
-                ZipArchive::ER_EOF => 'Premature EOF',
-                ZipArchive::ER_INTERNAL => 'Internal error',
-                ZipArchive::ER_INVALID => 'Invalid argument',
-                ZipArchive::ER_REMOVE => 'Cannot remove file',
-                ZipArchive::ER_DELETED => 'Entry has been deleted'
-            ];
-            
-            $errorMessage .= ' - ' . ($zipErrors[$zipOpenResult] ?? 'Unknown error');
-            
-            // Log detailed error information
-            logMessage("ZIP Creation Error: $errorMessage", 'ERROR');
-            logMessage("Directory permissions: " . substr(sprintf('%o', fileperms(dirname($zipPath))), -4), 'ERROR');
-            logMessage("Directory owner: " . posix_getpwuid(fileowner(dirname($zipPath)))['name'], 'ERROR');
-            logMessage("PHP process user: " . get_current_user(), 'ERROR');
-            
-            // Try to create a test file in the same directory
-            $testFile = dirname($zipPath) . '/test_write_' . time() . '.txt';
-            $testWrite = @file_put_contents($testFile, 'test');
-            if ($testWrite === false) {
-                logMessage("Failed to create test file in directory. Error: " . error_get_last()['message'], 'ERROR');
-            } else {
-                logMessage("Successfully created test file: $testFile", 'INFO');
-                unlink($testFile);
-            }
-            throw new Exception($errorMessage);
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            throw new Exception('Failed to create ZIP file');
         }
         
         $processedCount = 0;
@@ -800,28 +885,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         }
         
-        // Close the ZIP file with error handling
+        // Close the ZIP file
         if ($zip->close() === false) {
-            $errorMessage = 'Failed to finalize ZIP file';
-            if (file_exists($zipPath)) {
-                $errorMessage .= '. ZIP file size: ' . filesize($zipPath) . ' bytes';
-            } else {
-                $errorMessage .= '. ZIP file was not created';
-            }
-            throw new Exception($errorMessage);
+            throw new Exception('Failed to finalize ZIP file');
         }
         
-        // Verify the ZIP file was created and is valid
+        // Verify the ZIP file was created
         if (!file_exists($zipPath)) {
-            throw new Exception('Failed to create the final ZIP file at: ' . $zipPath);
+            throw new Exception('Failed to create the final ZIP file');
         }
-        
-        // Check if the ZIP file is valid
-        $zip = new ZipArchive();
-        if ($zip->open($zipPath) !== true) {
-            throw new Exception('Created ZIP file is corrupted or invalid');
-        }
-        $zip->close();
         
         // Set appropriate permissions
         if (!chmod($zipPath, 0664)) {
@@ -839,14 +911,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if ($processedCount === 0 && !empty($errors)) {
             $response['message'] = 'Failed to process any files: ' . implode('; ', $errors);
         }
+        
     } catch (Exception $e) {
-        // Handle any exceptions during processing
-        $response = [
-            'success' => false,
-            'message' => 'An error occurred while processing your request: ' . $e->getMessage(),
-            'errors' => [$e->getMessage()]
-        ];
-        error_log('Processing error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+        $response['success'] = false;
+        $response['message'] = 'Processing error: ' . $e->getMessage();
+        logMessage('Processing error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine(), 'ERROR');
     } finally {
         // Clean up temporary files in case of success or failure
         if (isset($tempDir) && is_dir($tempDir)) {
@@ -865,7 +934,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     
     // Output the final response
-    header('Content-Type: application/json');
     echo json_encode($response);
     exit;
 }
@@ -911,9 +979,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES) && (!isset($_POST['
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
-    <!-- Bootstrap Icons for UI elements -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <style>
         body {
             background-color: #f8f9fa;
