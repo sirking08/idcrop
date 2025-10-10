@@ -35,18 +35,27 @@ A PHP web application that automatically detects faces in ID photos, crops them 
 ### For Face Detection:
 - **OpenCV with Python** (Required for face detection):
   ```bash
-  # Install OpenCV for Python
+  # Update package list and install required dependencies
   sudo apt-get update
-  sudo apt-get install python3-opencv python3-pip
   
-  # Install required Python packages
-  sudo pip3 install Pillow
+  # Install OpenCV and required system packages
+  sudo apt-get install -y python3-opencv python3-pip python3-pil python3-olefile \
+    libimagequant0 libraqm0 libwebpdemux2 opencv-data
   
   # Verify installation
-  python3 -c "import cv2; print(f'OpenCV version: {cv2.__version__}')"
+  python3 -c "import cv2; print(f'OpenCV version: {cv2.__version__}'); print('Haar Cascade file exists:', 'Yes' if any(os.path.exists(p) for p in ['/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml', '/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml', '/usr/local/share/opencv/haarcascades/haarcascade_frontalface_default.xml', 'haarcascade_frontalface_default.xml']) else 'No')""
+  
+  # Download Haar Cascade classifier file
+  wget https://raw.githubusercontent.com/opencv/opencv/4.x/data/haarcascades/haarcascade_frontalface_default.xml -O /path/to/your/project/haarcascade_frontalface_default.xml
   ```
 
-- **PHP Requirements**:
+  **Note**: The application will automatically look for the Haar Cascade classifier file in these locations:
+  - `/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml` (recommended)
+  - `/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml`
+  - `/usr/local/share/opencv/haarcascades/haarcascade_frontalface_default.xml`
+  - `haarcascade_frontalface_default.xml` (in the project directory)
+
+- **PHP Requirements":
   ```bash
   # Required PHP extensions
   sudo apt-get install php-gd php-zip php-mbstring
@@ -130,6 +139,14 @@ location /idcrop {
    # On Ubuntu/Debian
    sudo apt update
    sudo apt install -y php-gd php-zip php-fileinfo php-mbstring php-json php-xml
+   
+   # Set proper permissions for web server
+   sudo chown -R www-data:www-data /var/www/html/idcrop
+   sudo chmod -R 775 /var/www/html/idcrop/uploads /var/www/html/idcrop/output
+   
+   # Create necessary directories if they don't exist
+   mkdir -p /var/www/html/idcrop/uploads/temp
+   mkdir -p /var/www/html/idcrop/output
    
    # On CentOS/RHEL
    sudo yum install -y php-gd php-zip php-fileinfo php-mbstring php-json php-xml

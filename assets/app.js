@@ -542,6 +542,8 @@ const IDPhotoCropper = (function() {
                 
                 const formData = new FormData();
                 formData.append('images[]', file);
+                // Include batch identifier so PHP groups files
+                formData.append('request_id', state.requestId);
                 
                 const xhr = new XMLHttpRequest();
                 activeXHRs.add(xhr);

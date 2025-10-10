@@ -422,6 +422,20 @@ function handleFileUpload() {
     ];
     
     try {
+        // Initialize session if not already started
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        
+        // Determine current request batch ID
+        $currentRequestId = $_POST['request_id'] ?? ($_GET['request_id'] ?? null);
+        
+        // If this is the first upload or the request_id changed, start a new batch
+        if (!isset($_SESSION['current_request_id']) || $_SESSION['current_request_id'] !== $currentRequestId) {
+            $_SESSION['current_request_id'] = $currentRequestId;
+            $_SESSION['uploaded_files']   = [];
+            $_SESSION['upload_timestamp'] = time();
+        }
         // Check if files were uploaded
         if (empty($_FILES['images'])) {
             throw new Exception('No files were uploaded');
@@ -481,9 +495,6 @@ function handleFileUpload() {
         
         // Store uploaded files in session for further processing
         if (!empty($uploadedFiles)) {
-            if (!isset($_SESSION['uploaded_files'])) {
-                $_SESSION['uploaded_files'] = [];
-            }
             
             foreach ($uploadedFiles as $file) {
                 $_SESSION['uploaded_files'][] = [
@@ -491,10 +502,12 @@ function handleFileUpload() {
                     'saved_name' => $file['saved_name'],
                     'path' => $file['path'],
                     'size' => $file['size'],
-                    'type' => $file['type']
+                    'type' => $file['type'],
+                    'uploaded_at' => $_SESSION['upload_timestamp']
                 ];
             }
             
+            // Set success message
             $response['success'] = $response['stats']['failed'] === 0;
             $response['message'] = $response['success'] 
                 ? 'All files were uploaded successfully' 
@@ -588,7 +601,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             throw new Exception('No files available for processing. Please upload files first.');
         }
         
-        $uploadedFiles = $_SESSION['uploaded_files'];
+        // Get the current session's upload timestamp
+        $uploadTimestamp = $_SESSION['upload_timestamp'] ?? 0;
+        
+        // Filter files to only include those from the current upload session
+        $uploadedFiles = array_values(array_filter($_SESSION['uploaded_files'], function($file) use ($uploadTimestamp) {
+            $fileTime = $file['uploaded_at'] ?? 0;
+            return $fileTime >= $uploadTimestamp;
+        }));
+        
+        if (empty($uploadedFiles)) {
+            throw new Exception('No valid files found in the current session. Please upload files again.');
+        }
+        
         $zipName = 'processed_' . time() . '.zip';
         $zipPath = rtrim($outputDir, '/') . '/' . $zipName;
         
@@ -771,15 +796,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     ];
                 }
                 
-                // Add the file to the ZIP archive
+                // Add the file to the ZIP archive with a unique name
                 if ($fileToAdd && file_exists($fileToAdd['path'])) {
-                    if (!$zip->addFile($fileToAdd['path'], $fileToAdd['name'])) {
+                    // Create a unique name using index and original filename
+                    $uniqueName = ($processedCount + 1) . '_' . $fileToAdd['name'];
+                    if (!$zip->addFile($fileToAdd['path'], $uniqueName)) {
                         throw new Exception('Failed to add file to ZIP: ' . $fileToAdd['name']);
                     }
                     $processedCount++;
-                    logMessage("Added to ZIP: " . $fileToAdd['name']);
+                    logMessage("Added to ZIP: " . $uniqueName);
                 } else {
-                    throw new Exception($result['message'] ?? 'Unknown processing error');
+                    throw new Exception('File not found or could not be processed: ' . ($file['original_name'] ?? 'unknown'));
                 }
             } catch (Exception $e) {
                 $errorMsg = 'Failed to process ' . ($file['original_name'] ?? 'unknown file') . ': ' . $e->getMessage();
@@ -789,9 +816,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 // Try to add the original file as a fallback
                 try {
                     if (file_exists($file['path'])) {
-                        $originalName = 'original_' . basename($file['original_name']);
+                        $originalName = ($processedCount + 1) . '_original_' . basename($file['original_name']);
                         if ($zip->addFile($file['path'], $originalName)) {
                             $processedCount++;
+                            logMessage("Added original file to ZIP: " . $originalName);
                             logMessage("Added original file as fallback: $originalName");
                         }
                     }
