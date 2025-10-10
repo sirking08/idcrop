@@ -46,6 +46,50 @@ if (!file_exists($outputDir)) {
     mkdir($outputDir, 0777, true);
 }
 
+// Handle "Download All" request for zipping all processed face images
+if (isset($_GET['download']) && $_GET['download'] === '1') {
+    try {
+        // Collect all face image files (jpg/png) from the output directory
+        $faceFiles = glob($outputDir . '/*.{jpg,jpeg,png}', GLOB_BRACE);
+
+        if (empty($faceFiles)) {
+            throw new Exception('No face images found to download.');
+        }
+
+        // Create temporary ZIP archive
+        $zipFilename = 'faces_' . date('Ymd_His') . '.zip';
+        $zipPath = sys_get_temp_dir() . '/' . $zipFilename;
+
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            throw new Exception('Could not create ZIP archive.');
+        }
+
+        foreach ($faceFiles as $file) {
+            $zip->addFile($file, basename($file));
+        }
+        $zip->close();
+
+        if (!file_exists($zipPath)) {
+            throw new Exception('Failed to create ZIP file.');
+        }
+
+        // Output headers and the ZIP file for download
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="faces.zip"');
+        header('Content-Length: ' . filesize($zipPath));
+        readfile($zipPath);
+
+        // Clean up temporary file
+        @unlink($zipPath);
+        exit;
+    } catch (Exception $e) {
+        // Log error and show a user-friendly message later in the page
+        logError('Download All error: ' . $e->getMessage());
+        $error = 'Download failed: ' . $e->getMessage();
+    }
+}
+
 $results = [];
 $error = '';
 
@@ -248,7 +292,8 @@ function extractIdNumber($imagePath) {
                 <?php if (!empty($results)): ?>
                     <div class="card">
                         <div class="card-header">
-                            <h5>Processing Results</h5>
+                            <h5 class="d-inline">Processing Results</h5>
+                                <a href="?download=1" class="btn btn-success btn-sm float-end">Download All Faces (ZIP)</a>
                         </div>
                         <div class="card-body">
                             <?php foreach ($results as $result): ?>
