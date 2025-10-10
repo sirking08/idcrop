@@ -148,24 +148,42 @@ function extractIdNumber($imagePath) {
         @unlink($outputFile);
         @unlink($tempBase);
         
-        // Try multiple patterns to match different ID formats
-        $patterns = [
-            // Pattern for HS2200261 format (2 letters followed by numbers)
-            '/\b([A-Za-z]{2}\s*\d{5,20})\b/i',
-            // Pattern for numbers only
-            '/\b(\d{8,20})\b/',
-            // More flexible pattern for alphanumeric IDs
-            '/\b([A-Za-z0-9]{5,20})\b/'
-        ];
+        // First, try to find the ID number pattern that matches the image format
+        if (preg_match('/\b(\d{8})\b/', $ocrText, $matches)) {
+            $fullNumber = $matches[1];
+            // Take the last 7 digits of the 8-digit number
+            $last7digits = substr($fullNumber, -7);
+            $id = 'HS' . $last7digits;
+            error_log("Extracted 8-digit number: $fullNumber, Using last 7 digits: $last7digits, Generated ID: $id");
+            return $id;
+        }
         
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $ocrText, $matches)) {
-                // Clean up the matched ID (remove spaces, normalize case)
-                $id = strtoupper(preg_replace('/\s+/', '', $matches[1]));
-                error_log("Matched ID: " . $id . " with pattern: " . $pattern);
+        // If no 8-digit number found, look for any 7+ digit number
+        if (preg_match('/\b(\d{7,})\b/', $ocrText, $matches)) {
+            $number = $matches[1];
+            $last7digits = substr($number, -7);
+            $id = 'HS' . $last7digits;
+            error_log("Found number: $number, Using last 7 digits: $last7digits, Generated ID: $id");
+            return $id;
+        }
+        
+        // If still no match, try to find the longest number sequence
+        if (preg_match_all('/\d+/', $ocrText, $matches)) {
+            $longest = '';
+            foreach ($matches[0] as $match) {
+                if (strlen($match) > strlen($longest)) {
+                    $longest = $match;
+                }
+            }
+            if (strlen($longest) >= 7) {
+                $last7digits = substr($longest, -7);
+                $id = 'HS' . $last7digits;
+                error_log("Using longest number sequence: $longest, Last 7 digits: $last7digits, Generated ID: $id");
                 return $id;
             }
         }
+        
+        error_log("No suitable number sequence found in OCR text");
         
         // If we got here, no pattern matched
         throw new Exception('No valid ID number found in the image. OCR text: ' . substr($ocrText, 0, 100) . '...');
