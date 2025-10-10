@@ -35,8 +35,8 @@ set_exception_handler(function($e) {
 require_once __DIR__ . '/includes/image_processor.php';
 
 // Define directories
-$uploadDir = __DIR__ . '/uploads/batch_id_cards';
-$outputDir = __DIR__ . '/output/batch_faces';
+$uploadDir = __DIR__ . '/uploads';
+$outputDir = __DIR__ . '/output';
 
 // Create directories if they don't exist
 if (!file_exists($uploadDir)) {
@@ -269,7 +269,7 @@ function extractIdNumber($imagePath) {
                                         
                                         <?php if ($result['face_detected']): ?>
                                             <div class="mt-2">
-                                                <img src="output/batch_faces/<?php echo htmlspecialchars($result['output_file']); ?>" 
+                                                <img src="output/<?php echo htmlspecialchars($result['output_file']); ?>" 
                                                      alt="Extracted Face" class="img-thumbnail preview-image">
                                             </div>
                                         <?php endif; ?>

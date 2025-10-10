@@ -35,8 +35,8 @@ set_exception_handler(function($e) {
 require_once __DIR__ . '/includes/image_processor.php';
 
 // Define directories
-$uploadDir = __DIR__ . '/uploads/test_id';
-$outputDir = __DIR__ . '/output/test_id';
+$uploadDir = __DIR__ . '/uploads';
+$outputDir = __DIR__ . '/output';
 
 // Create directories if they don't exist
 if (!file_exists($uploadDir)) {
@@ -245,9 +245,9 @@ function extractIdNumber($imagePath) {
                 <?php if ($outputFile && file_exists($outputFile)): ?>
                     <div class="result mt-3">
                         <h6>Cropped Face:</h6>
-                        <img src="/idcrop/output/test_id/<?= basename($outputFile) ?>?t=<?= time() ?>" class="img-fluid rounded preview">
+                        <img src="/idcrop/output/<?= basename($outputFile) ?>?t=<?= time() ?>" class="img-fluid rounded preview">
                         <div class="mt-2">
-                            <a href="/idcrop/output/test_id/<?= basename($outputFile) ?>" class="btn btn-sm btn-outline-primary" download>
+                            <a href="/idcrop/output/<?= basename($outputFile) ?>" class="btn btn-sm btn-outline-primary" download>
                                 Download Image
                             </a>
                         </div>

@@ -35,8 +35,8 @@ set_exception_handler(function($e) {
 require_once __DIR__ . '/includes/image_processor.php';
 
 // Define directories
-$uploadDir = __DIR__ . '/uploads/batch_id_cards';
-$outputDir = __DIR__ . '/output/batch_faces';
+$uploadDir = __DIR__ . '/uploads';
+$outputDir = __DIR__ . '/output';
 
 // Create directories if they don't exist
 if (!file_exists($uploadDir)) {
@@ -280,8 +280,16 @@ function extractIdNumber($imagePath) {
                     <div class="card-body">
                         <form action="" method="post" enctype="multipart/form-data" id="uploadForm">
                             <div class="mb-3">
-                                <label for="idCards" class="form-label">Select ID Card Images</label>
-                                <input class="form-control" type="file" id="idCards" name="id_cards[]" multiple accept="image/*" required>
+                                <label class="form-label">Select ID Card Images</label>
+                                <div class="input-group">
+                                    <!-- Hidden native file input -->
+                                    <input type="file" class="d-none" id="idCards" name="id_cards[]" multiple accept="image/*" required>
+                                    <!-- Custom button -->
+                                    <label class="btn btn-outline-primary" for="idCards" id="idCardsButton">
+                                        <i class="bi bi-upload"></i> Choose Files
+                                    </label>
+                                    <span class="form-control bg-white" id="idCardsFilename" style="pointer-events:none;">No files selected</span>
+                                </div>
                                 <div class="form-text">You can select multiple files (JPG, PNG, etc.)</div>
                             </div>
                             <button type="submit" class="btn btn-primary">Process ID Cards</button>
@@ -314,7 +322,7 @@ function extractIdNumber($imagePath) {
                                         
                                         <?php if ($result['face_detected']): ?>
                                             <div class="mt-2">
-                                                <img src="output/batch_faces/<?php echo htmlspecialchars($result['output_file']); ?>" 
+                                                <img src="output/<?php echo htmlspecialchars($result['output_file']); ?>" 
                                                      alt="Extracted Face" class="img-thumbnail preview-image">
                                             </div>
                                         <?php endif; ?>
@@ -330,11 +338,28 @@ function extractIdNumber($imagePath) {
         </div>
     </div>
     
+    <!-- Bootstrap JS bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Bootstrap Icons for upload icon -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.5.0/font/bootstrap-icons.css">
+
     <script>
+        // Update filename preview when files are selected
+        const fileInput = document.getElementById('idCards');
+        const filenameDisplay = document.getElementById('idCardsFilename');
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length === 0) {
+                filenameDisplay.textContent = 'No files selected';
+            } else if (fileInput.files.length === 1) {
+                filenameDisplay.textContent = fileInput.files[0].name;
+            } else {
+                filenameDisplay.textContent = `${fileInput.files.length} files selected`;
+            }
+        });
+
         // Simple form validation
         document.getElementById('uploadForm').addEventListener('submit', function(e) {
-            const fileInput = document.getElementById('idCards');
             if (fileInput.files.length === 0) {
                 e.preventDefault();
                 alert('Please select at least one file to upload.');

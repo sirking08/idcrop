@@ -43,7 +43,7 @@ A PHP web application that automatically detects faces in ID photos, crops them 
     libimagequant0 libraqm0 libwebpdemux2 opencv-data
   
   # Verify installation
-  python3 -c "import cv2; print(f'OpenCV version: {cv2.__version__}'); print('Haar Cascade file exists:', 'Yes' if any(os.path.exists(p) for p in ['/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml', '/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml', '/usr/local/share/opencv/haarcascades/haarcascade_frontalface_default.xml', 'haarcascade_frontalface_default.xml']) else 'No')""
+  python3 -c "import cv2, os; print(f'OpenCV version: {cv2.__version__}'); print('Haar Cascade file exists:', 'Yes' if any(os.path.exists(p) for p in ['/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml', '/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml', '/usr/local/share/opencv/haarcascades/haarcascade_frontalface_default.xml', 'haarcascade_frontalface_default.xml']) else 'No')"
   
   # Download Haar Cascade classifier file
   wget https://raw.githubusercontent.com/opencv/opencv/4.x/data/haarcascades/haarcascade_frontalface_default.xml -O /path/to/your/project/haarcascade_frontalface_default.xml
@@ -55,7 +55,7 @@ A PHP web application that automatically detects faces in ID photos, crops them 
   - `/usr/local/share/opencv/haarcascades/haarcascade_frontalface_default.xml`
   - `haarcascade_frontalface_default.xml` (in the project directory)
 
-- **PHP Requirements":
+- **PHP Requirements**:
   ```bash
   # Required PHP extensions
   sudo apt-get install php-gd php-zip php-mbstring
